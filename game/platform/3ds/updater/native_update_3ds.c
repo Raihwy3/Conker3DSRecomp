@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include "native_update.h"
+#include "conker_launcher.h"
 #include "native_update_http.h"
 #include "native_update_ca.h"
 static PrintConsole *top_screen,*bottom_screen;
@@ -34,6 +35,11 @@ static void worker(void *p){
     __atomic_store_n(&job.done,1,__ATOMIC_RELEASE);
 }
 static void draw(const char *stage,const char *message,const char *actions,unsigned n,unsigned total){
+    struct ConkerLauncherView view={0};
+    view.stage=stage;view.message=message;view.actions=actions;view.done=n;view.total=total;
+    char detail[96];
+    if(job.release.tag[0]){snprintf(detail,sizeof detail,"AVAILABLE  %s",job.release.tag);view.detail=detail;}
+    if(conker_launcher_draw(&view))return;
     consoleSelect(top_screen);consoleClear();
     printf("\x1b[3;4HConker: 3DS Recomp\x1b[7;4H%s\x1b[11;4H%s",stage,message);
     if(total)printf("\x1b[17;4H%u%%",(unsigned)((unsigned long long)n*100/total));

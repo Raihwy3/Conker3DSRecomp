@@ -29,9 +29,9 @@ extern "C" void conker_3ds_reticle_draw(uint8_t* rdram,recomp_context* ctx){
  if(w<=0 || w>1024 || h<=0 || h>1024)return;
  static uint32_t slot=0;uint32_t address=0x00F12000+(slot++%32)*0x400;gpr dl=(gpr)(int32_t)(address|0x80000000);
  cmd(rdram,dl,0xE7000000,0);cmd(rdram,dl,0xED000000,((w*4)<<12)|(h*4));
- cmd(rdram,dl,0xE3000A01,0x00300000);cmd(rdram,dl,0xF7000000,0x07c107c1);
+ cmd(rdram,dl,0xE3000A01,0x00300000);cmd(rdram,dl,0xF7000000,0xffffffff);
  auto dot=[&](int x,int y,int size){cmd(rdram,dl,0xF6000000|(((x+size-1)*4)<<12)|((y+size-1)*4),((x*4)<<12)|(y*4));};
- const int cx=w/2,cy=int(h*(raised?.30f:.50f));const float radius=h*.05f;
- for(int i=0;i<24;++i){float a=i*6.2831853f/24;dot(cx+int(std::cos(a)*radius),cy+int(std::sin(a)*radius),2);}dot(cx-1,cy-1,3);
+ const int cx=w/2,cy=int(h*(raised?.30f:.50f));
+ dot(cx-1,cy-1,3);
  cmd(rdram,dl,0xDF000000,0);gpr out=(gpr)(int32_t)MEM_W(0,ctx->r17);cmd(rdram,out,0xDE000000,address);MEM_W(0,ctx->r17)=out;
 }

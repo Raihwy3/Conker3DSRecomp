@@ -20,6 +20,8 @@ Options captures game buttons, both sticks, touch input and gyro. After closing 
 
 **Interface → Diagnostics → GFX task text** controls the bottom-screen capture-saved notification. Captures themselves and file logging remain available. The performance monitor has its own toggle.
 
+The gameplay bottom screen also shows the ROM-derived chocolate health pieces at the top right and the cash total at the bottom left. These stay hidden during the intro and scripted sequences. Tails follow the active save’s First Death introduction flag; chocolate follows the game’s health count, and money appears when the cash total is above zero, as in the original pause menu. Unlocks are read from the game, so existing saves work without replaying introductions. **Interface → Appearance** has separate **Chocolate health** and **Money display** toggles. **Animated tails** plays the original ROM’s bending tail animation instead of the static icon; it is off by default. Animation frames are prepared at startup and follow the native 30 Hz timing.
+
 On a New 3DS with the normal core layout, game logic runs on core 0, graphics work on core 2, and audio work uses the granted share of core 1. The SD read-ahead worker requests core 3 and falls back when that core is unavailable. It can spend most of its time asleep. CPU readings describe current workload, not a target that all cores must reach.
 
 **Misc** holds recomp-specific modifiers. **Skip intro** skips the startup logos and chainsaw opening, loading the pub/menu entrance instead. It is saved for future launches and is off by default. This is a native adaptation of the upstream Skip Intro transition; no mod loader is used. It does not skip story cutscenes in a new game.

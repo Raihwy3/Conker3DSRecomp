@@ -308,6 +308,9 @@ void touch_pad_set_buttons(const TouchButton* buttons, size_t count, int press_m
 // Optional custom bottom-screen presentation; call before run().
 void screen_set_conker_theme(bool enabled);
 void screen_conker_set_options_button(int visible);
+void screen_conker_set_health_display(int enabled);
+void screen_conker_set_money_display(int enabled);
+void screen_conker_set_animated_tails(int enabled);
 void screen_conker_set_lives_display(int mode);
 void screen_conker_set_chapter_display(int visible);
 void screen_conker_set_gfx_text(int visible);

@@ -10,7 +10,11 @@ Includes stereoscopic 3D, interpolated presentation, graphics filters, DSP audio
 2. Put your legally backed-up US retail ROM in `/3ds/ConkerRecomp/`, named `CBFD.z64`.
 3. Start **Conker: 3DS Recomp** from Homebrew Launcher.
 
-The supported Uncensored version can also be placed there as `CBFDUncensored.z64`. The launcher lets you choose between them. Only the specific supported patch is accepted; other ROM hacks are not guaranteed to work. Both versions share saves and settings.
+The Uncensored ROM can also be placed there as `CBFDUncensored.z64`. The launcher lets you choose which ROM to start. All versions share saves and settings.
+
+For translations, place `CBFDfr.z64` (French), `CBFDes.z64` (Spanish) or `CBFDptbr.z64` (Brazilian Portuguese) in the same folder, then choose **Translations** at startup.
+
+The launcher uses Conker’s ROM-derived font and pub-floor background for version selection and update screens. The Translations entry lists ES, FR and PTBR beneath it.
 
 No ROM or extracted game artwork, music or textures is supplied in this source repository. The interface reads its game artwork from your ROM. The public launcher icon is an original monogram.
 

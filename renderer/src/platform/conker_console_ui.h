@@ -1,11 +1,16 @@
 // Conker's original UI font and OPTIONS sprite, decoded from the selected ROM.
 // Included by log.cpp inside its private namespace; no artwork is embedded here.
+#include "conker_launcher.h"
 struct ConkerGlyph { int w=0,h=0,dx=0,dy=0; uint8_t pixels[32*32]{}; };
 ConkerGlyph g_game_glyphs[95];
 uint8_t g_game_map[95]{};
 uint8_t g_options_art[96*32*4]{};
 bool g_game_font_ready=false,g_options_ready=false;
 bool g_conker_options_visible=true;
+bool g_conker_animated_tails=false,g_conker_health_visible=true,g_conker_money_visible=true;
+int g_conker_health=-1,g_conker_cash=-1;
+u64 g_conker_tail_tick=0;
+uint8_t g_money_art[32*32*4]{};
 int g_conker_lives_display=0; // Full, icons only, hidden.
 bool g_conker_chapter_visible=true,g_conker_gfx_text=true;
 char g_conker_section_title[48]{};
@@ -64,11 +69,12 @@ bool load_conker_ui(const char* path) {
         if(at+8>font.size()) {good=false;break;}
         auto& g=g_game_glyphs[k];g.w=font[at];g.h=font[at+1];g.dx=font[at+2];g.dy=font[at+3];
         size_t size=ui_word(font.data()+at+4),n=0;
-        if(!g.w || !g.h || g.w>32 || g.h>32 || size<8 || at+size>font.size()) {good=false;break;}
+        if(g.w>32 || g.h>32 || size<8 || at+size>font.size()) {good=false;break;}
         for(size_t p=at+8;p<at+size;++p) {
             const int count=(font[p]&15)+1;
-            if(n+count>(size_t)(g.w*g.h)) {good=false;break;}
-            for(int j=0;j<count;++j)g.pixels[n++]=font[p]&0xF0;
+            // Some translations leave zero-width glyphs or padding runs
+            // after a glyph's bitmap. Decode only its declared pixel area.
+            for(int j=0;j<count && n<(size_t)(g.w*g.h);++j)g.pixels[n++]=font[p]&0xF0;
         }
         if(n!=(size_t)(g.w*g.h))good=false;
         at+=size;
@@ -94,6 +100,7 @@ bool load_conker_ui(const char* path) {
         for(int id=0;id<=4506;++id) {
             const size_t n=(size_t(data[0xF200+id*2])<<8)|data[0xF201+id*2];
             uint8_t* target=nullptr;int target_width=32, tile=0;
+            if(id==2038)target=g_money_art;
             if(id>=2035 && id<=2037){target=g_options_art;target_width=96;tile=id-2035;}
             for(int c=0;c<9;++c) {const int base=c==3?barn:chapters[c];
                 if(id>=base && id<base+3){target=g_chapter_art[c];target_width=96;tile=id-base;}}
@@ -238,7 +245,11 @@ void update_conker_status() {
         g_conker_story_intro=true;
     if(g_conker_story_intro && map==0x29 && controlled)g_conker_story_intro=false;
     if(controlled && !g_conker_story_intro){g_conker_has_played=true;g_conker_play_map=map;}
-    if(g_conker_story_intro){
+    // First Death has its own map and scene title. Unlike ordinary scripted
+    // cutaways, it must not keep the title from the map where Conker died.
+    if(in_game && map==0x22){
+        chosen=202;chapter=chapter_for_scene(chosen);displayed_lives=-1;
+    }else if(g_conker_story_intro){
         chosen=191;chapter=0;displayed_lives=-1;
     }else if(!in_game || !g_conker_has_played){
         chosen=-1;chapter=-1;displayed_lives=-1;
@@ -246,6 +257,27 @@ void update_conker_status() {
         if(scripted || (!player_camera && map!=g_conker_play_map))displayed_lives=-1;
         if(!controlled && map!=g_conker_play_map){chosen=g_conker_scene;chapter=g_conker_chapter;}
     }
+    // The native player record stores chocolate health at +0x1CA;
+    // stat 6 is the story cash word. Match the game's million-dollar sentinel.
+    const bool show_stats=displayed_lives>=0;
+    // Native pause menu 151EB080: spare lives become visible after the
+    // First Death introduction (save scene 202), or in its special mode.
+    // Read the active save each poll; never carry unlocks between files.
+    const bool valid_save=save>=0x80000000 && save<=0x807FFFE6;
+    const bool tails_unlocked=valid_save &&
+        (g_conker_rdram[((save-0x80000000)+0x19)^3]&4);
+    const bool special_mode=int8_t(g_conker_rdram[0x8FDA8^3])<0;
+    if(!tails_unlocked && !special_mode)displayed_lives=-1;
+    // The chocolate renderer (150900F0) draws the native health count,
+    // rather than consulting a separate permanent unlock flag. Money in
+    // 151EB554 is likewise omitted when the current total is zero.
+    const int native_health=std::clamp(int(g_conker_rdram[(0xCC2D0+0x1CA)^3]),0,6);
+    const int health=show_stats && native_health>0?native_health:-1;
+    int cash=show_stats?std::clamp(int(int32_t(game_mem_word(0x800D2148))),0,9999999):-1;
+    if(cash==0x7D00)cash=1000000;
+    if(cash==0)cash=-1;
+    if(health!=g_conker_health || cash!=g_conker_cash)g_screen_dirty=true;
+    g_conker_health=health;g_conker_cash=cash;
     if(map!=g_conker_map || displayed_lives!=g_conker_lives || chosen!=g_conker_scene || chapter!=g_conker_chapter)g_screen_dirty=true;
     g_conker_map=map;g_conker_lives=displayed_lives;g_conker_scene=chosen;g_conker_chapter=chapter;
 }
@@ -275,7 +307,7 @@ void game_background() {
         const float fx=std::min(1.0f,std::min(x,319-x)/38.0f);
         const float fy=std::min(1.0f,std::min(y,239-y)/26.0f);
         const float sx=fx*fx*(3-2*fx),sy=fy*fy*(3-2*fy);
-        const int light=int(80*sx*sy);
+        const int light=int(100*sx*sy);
         g_theme_base[theme_index(x,y)]=theme_rgb(((p>>11)&31)*light/31,((p>>5)&63)*light/63,(p&31)*light/31);
     }
 }
@@ -297,9 +329,11 @@ void game_lives(uint16_t* dest,uint16_t colour) {
             }
     }
     if(right<=left || bottom<=top)return;
-    const int count=std::clamp(g_conker_lives,0,99),sw=right-left,sh=bottom-top;
+    const bool animated=g_conker_animated_tails && g_tail_frames_ready;
+    const int crop_left=animated?g_tail_crop[0]:left,crop_top=animated?g_tail_crop[2]:top;
+    const int count=std::clamp(g_conker_lives,0,99),sw=animated?g_tail_crop[1]-g_tail_crop[0]:right-left,sh=animated?g_tail_crop[3]-g_tail_crop[2]:bottom-top;
     const int start_x=g_conker_lives_display==1?12:62;
-    const int available=308-start_x;
+    const int available=208-start_x;
     int height=32,width=1,gap=3,columns=1;
     for(;height>=8;--height){
         width=std::max(1,sw*height/sh);gap=std::max(2,height/8);
@@ -308,10 +342,31 @@ void game_lives(uint16_t* dest,uint16_t colour) {
     }
     for(int i=0;i<count;++i){
         const int x=start_x+(i%columns)*(width+gap),y=4+(i/columns)*(height+3);
+        const uint8_t* image=g_life_icon;
+        if(animated){
+            const int frame=(svcGetSystemTick()/(SYSCLOCK_ARM11/30)+i*2)%kTailFrames;
+            image=g_tail_frames[frame];
+        }
         for(int yy=0;yy<height;++yy)for(int xx=0;xx<width;++xx){
-            const auto* p=g_life_icon+((top+yy*sh/height)*kLifeIconSize+left+xx*sw/width)*4;
+            const auto* p=image+((crop_top+yy*sh/height)*kLifeIconSize+crop_left+xx*sw/width)*4;
             game_blend(dest,x+xx,y+yy,p[0],p[1],p[2],p[3]);
         }
+    }
+}
+// Original pause-menu artwork, placed in the bottom screen's corners.
+void game_scaled_sprite(uint16_t* dest,const uint8_t* image,int source_w,int source_h,int x,int y,int w,int h,int alpha=255) {
+    for(int yy=0;yy<h;++yy)for(int xx=0;xx<w;++xx){const auto* p=image+((yy*source_h/h)*source_w+xx*source_w/w)*4;
+        game_blend(dest,x+xx,y+yy,p[0],p[1],p[2],p[3]*alpha/255);}
+}
+void game_health_money(uint16_t* dest) {
+    if(g_conker_health_visible && g_conker_health>=0 && g_chocolate_ready)
+        for(int i=0;i<6;++i)game_scaled_sprite(dest,g_chocolate_icon,kLifeIconSize,kLifeIconSize,
+            224+(i%3)*27,5+(i/3)*26,26,26,i<g_conker_health?255:48);
+    if(g_conker_money_visible && g_conker_cash>=0){
+        game_sprite(dest,g_money_art,32,32,8,199);
+        char text[16];snprintf(text,sizeof(text),"%d",g_conker_cash);
+        int x=39;for(const char* c=text;*c;++c,x+=19)
+            game_scaled_sprite(dest,g_life_digits[*c-'0'],32,32,x,201,24,24);
     }
 }
 void compose_conker_panel(uint16_t* dest) {
@@ -322,6 +377,14 @@ void compose_conker_panel(uint16_t* dest) {
     for(int i=0;i<320*240;++i){auto c=g_theme_base[i];dest[i]=theme_rgb(((c>>11)&31)*dim/31,((c>>5)&63)*dim/63,(c&31)*dim/31);}
     const uint16_t white=theme_rgb(255,255,255),yellow=theme_rgb(255,223,70),red=theme_rgb(255,110,95);
     char line[41];
+    if(!g_conker_rdram && g_game_font_ready){
+        game_text(dest,"CONKER: 3DS RECOMP",160,24,288,yellow,true);
+        game_text(dest,CONKER_LAUNCHER_VERSION,160,49,280,white,true);
+        game_text(dest,"GETTING READY",160,99,280,yellow,true);
+        game_text(dest,"PREPARING THE GAME",160,126,280,white,true);
+        game_text(dest,"YOUR ADVENTURE STARTS SOON",160,155,286,white,true);
+        return;
+    }
     if(g_conker_quit_prompt) {
         game_text(dest,"QUIT GAME?",160,68,290,yellow,true);
         game_text(dest,g_conker_quit_restarts?"QUITTING RESTARTS THE CONSOLE":"RETURN TO THE LAUNCHER",160,104,292,white,true);
@@ -333,6 +396,7 @@ void compose_conker_panel(uint16_t* dest) {
     }
     if(!g_conker_menu){
         if(g_conker_lives>=0)game_lives(dest,white);
+        game_health_money(dest);
         if(g_conker_chapter>=0) {if(g_conker_chapter_visible)game_sprite(dest,g_chapter_art[g_conker_chapter],96,32,112,84);}
         if(g_conker_chapter_visible && g_conker_scene>=0)game_text(dest,g_conker_scenes[g_conker_scene].title,160,126,292,white,true);
         if(g_conker_options_visible)game_options(dest,220,204);

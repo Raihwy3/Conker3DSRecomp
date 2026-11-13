@@ -1,3 +1,5 @@
+#include "conker_rom_choices.h"
+#include "conker_launcher.h"
 // Conker's Bad Fur Day: Recompiled, Nintendo 3DS entry point.
 #include <cinttypes>
 #include <atomic>
@@ -82,6 +84,7 @@ int g_face_camera_value=0;
 const char* const kFaceCameraNames[]={"Off","On"};
 void apply_face_camera(int v){recomp3ds::input_set_face_camera(v!=0);}
 int g_options_button = 1;
+int g_animated_tails=0,g_health_display=1,g_money_display=1;
 int g_lives_display=0,g_chapter_display=1,g_gfx_text=1;
 const char* const kLivesDisplay[]={"Full","Icons only","Hidden"};
 const char* const kOptionsButtonNames[] = { "Off", "On" };
@@ -128,6 +131,9 @@ void apply_skip_intro(int v){conker3ds::set("misc_skip_intro",v);}
 const MenuOption kOptions[] = {
     {"misc_skip_intro","Skip intro",0,1,&g_skip_intro,kOffOn,apply_skip_intro,PageGame},
     {"face_camera","Face-button camera",0,1,&g_face_camera_value,kFaceCameraNames,apply_face_camera,PageControls},
+    {"bottom_health","Chocolate health",0,1,&g_health_display,kOffOn,screen_conker_set_health_display,PageGame},
+    {"bottom_money","Money display",0,1,&g_money_display,kOffOn,screen_conker_set_money_display,PageGame},
+    {"bottom_animated_tails","Animated tails",0,1,&g_animated_tails,kOffOn,screen_conker_set_animated_tails,PageGame},
     {"bottom_lives","Lives display",0,2,&g_lives_display,kLivesDisplay,screen_conker_set_lives_display,PageGame},
     {"bottom_chapter","Chapter text",0,1,&g_chapter_display,kOffOn,screen_conker_set_chapter_display,PageGame},
     {"gfx_task_text","GFX task text",0,1,&g_gfx_text,kOffOn,screen_conker_set_gfx_text,PageGame},
@@ -205,22 +211,31 @@ RspUcodeFunc* get_rsp_microcode(const OSTask* task) {
 } // namespace
 
 // Choose a file in place: the original ROM, EEPROM and settings are never renamed.
-// These are the same two full-ROM hashes recognised by the upstream launcher.
+// ROM hashes distinguish the retail game and the supported patched files.
 void conker_set_rom_path(const char*);
 extern "C" int conker_update_startup(PrintConsole*, PrintConsole*);
 
+static int g_launcher_art_rom=-1;
 static int choose_rom() {
-    const char* paths[] = { "sdmc:/3ds/ConkerRecomp/CBFD.z64",
-                           "sdmc:/3ds/ConkerRecomp/CBFDUncensored.z64" };
-    bool present[2];
+    using namespace conker_rom_choices;
+    bool present[count]{};
     struct stat st;
-    for (int i = 0; i < 2; ++i) present[i] = stat(paths[i], &st) == 0 && S_ISREG(st.st_mode);
-    int selected = present[0] ? 0 : 1;
+    for(int i=0;i<count;++i){char path[192];snprintf(path,sizeof(path),"sdmc:/3ds/ConkerRecomp/%s",choices[i].filename);
+        present[i]=stat(path,&st)==0 && S_ISREG(st.st_mode);}
+    const bool any_translation=present[2] || present[3] || present[4];
+    bool translations=false;
+    int selected=present[0]?0:present[1]?1:2;
     // libctru retains the selected console pointer beyond this function.
     static PrintConsole top{}, bottom{};
     consoleInit(GFX_TOP, &top);
     consoleInit(GFX_BOTTOM, &bottom);
-    if (!conker_update_startup(&top, &bottom)) return -1;
+    // Use the available ROM only for launcher artwork; the chosen version is
+    // loaded again before running, so translations keep their own font.
+    for(int i=0;i<count;++i)if(present[i]){
+        char path[192];snprintf(path,sizeof(path),"sdmc:/3ds/ConkerRecomp/%s",choices[i].filename);
+        if(recomp3ds::screen_conker_load_rom(path)){g_launcher_art_rom=i;break;}
+    }
+    if (!conker_update_startup(&top, &bottom)){conker_launcher_finish();return -1;}
     bool redraw = true;
     int result = -1;
     // Drain the launch button before accepting a choice.
@@ -229,29 +244,52 @@ static int choose_rom() {
         hidScanInput();
         const u32 down = hidKeysDown();
         if (!(hidKeysHeld() & (KEY_A | KEY_START | KEY_B | KEY_TOUCH))) released = true;
-        if (released && (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT))) {
-            selected ^= 1;
-            redraw = true;
+        if(released && (down & (KEY_UP|KEY_DOWN|KEY_LEFT|KEY_RIGHT))){
+            selected=wrap(selected,(down&(KEY_UP|KEY_LEFT))?-1:1);redraw=true;
         }
-        if (released && (down & KEY_TOUCH)) {
-            touchPosition touch;
-            hidTouchRead(&touch);
-            if (touch.py >= 64 && touch.py < 128) {
-                selected = (touch.py - 64) / 32;
-                redraw = true;
-                if (present[selected]) { result = selected; break; }
-            }
+        bool accept=released && (down&(KEY_A|KEY_START));
+        if(released && (down&KEY_TOUCH)){
+            touchPosition touch;hidTouchRead(&touch);
+            const int row=touch_row(touch.py);
+            if(row>=0){selected=row;redraw=true;accept=true;}
         }
-        if (released && (down & (KEY_A | KEY_START)) && present[selected]) { result = selected; break; }
-        if (released && (down & KEY_B)) break;
+        if(accept){
+            if(!translations && selected==2){translations=true;selected=0;redraw=true;}
+            else {const int index=rom_index(translations,selected);if(present[index]){result=index;break;}}
+        }
+        if(released && (down&KEY_B)){
+            if(translations){translations=false;selected=2;redraw=true;}
+            else break;
+        }
         if (redraw) {
+            ConkerLauncherView view{};
+            view.menu=1;view.selected=selected;
+            view.stage=translations?"TRANSLATIONS":"SELECT VERSION";
+            view.message="Pick a version below. Your ROM is checked before the game starts.";
+            view.detail="SAVES AND SETTINGS ARE SHARED";
+            view.actions=translations?"A: START    B: BACK":"A: SELECT    B: EXIT";
+            for(int row=0;row<3;++row){
+                const bool folder=!translations && row==2;
+                const int index=rom_index(translations,row);
+                view.labels[row]=folder?"TRANSLATIONS":choices[index].label;
+                view.available[row]=folder?any_translation:present[index];
+                view.notes[row]=folder?"ES FR PTBR":present[index]?choices[index].filename:"ROM NOT FOUND";
+            }
+            if(conker_launcher_draw(&view)){redraw=false;gspWaitForVBlank();continue;}
             consoleSelect(&top); consoleClear();
-            printf("\x1b[3;4HConker: 3DS Recomp\n\n   Choose your ROM version.\n\n   Files are checked before the game starts.\n\n   Both versions share your saves and settings.");
-            consoleSelect(&bottom); consoleClear();
-            printf("\x1b[3;3HSELECT VERSION");
-            printf("\x1b[9;3H%s Original%s", selected == 0 ? ">" : " ", present[0] ? "" : " (missing)");
-            printf("\x1b[13;3H%s Uncensored%s", selected == 1 ? ">" : " ", present[1] ? "" : " (missing)");
-            printf("\x1b[20;3HD-pad: choose   A/START: launch\n\n  Touch a version to launch. B: exit");
+            printf("\x1b[3;4HConker: 3DS Recomp\n\n   Choose your ROM version.\n\n   Files are checked before the game starts.\n\n   All versions share your saves and settings.");
+            if(translations)printf("\x1b[15;4HTranslations\n\n   CBFDfr.z64   - French\n   CBFDes.z64   - Spanish\n   CBFDptbr.z64 - Brazilian Portuguese");
+            consoleSelect(&bottom);consoleClear();
+            printf("\x1b[3;3H%s",translations?"TRANSLATIONS":"SELECT VERSION");
+            for(int row=0;row<3;++row){
+                const bool folder=!translations && row==2;
+                const int index=rom_index(translations,row);
+                const bool exists=folder?any_translation:present[index];
+                const char* label=folder?"Translations >":choices[index].label;
+                printf("\x1b[%d;3H%s %s%s",9+row*4,selected==row?">":" ",label,exists?"":" (missing)");
+            }
+            if(!translations)printf("\x1b[19;5HES FR PTBR");
+            printf("\x1b[24;3HD-pad: choose   A/START: launch\n\n  Touch to select. B: %s",translations?"back":"exit");
             redraw = false;
         }
         gfxFlushBuffers(); gfxSwapBuffers(); gspWaitForVBlank();
@@ -262,6 +300,15 @@ static int choose_rom() {
         if (!(hidKeysHeld() & (KEY_A | KEY_START | KEY_TOUCH))) break;
         gspWaitForVBlank();
     }
+    if(result>=0){
+        ConkerLauncherView view{};view.stage="STARTING GAME";
+        view.message="Checking your ROM and preparing the game.";
+        view.detail=choices[result].label;view.actions="PLEASE WAIT";
+        // Use the same panel for loading, rather than the update heading.
+        view.menu=2;view.selected=-1;
+        conker_launcher_draw(&view);gspWaitForVBlank();
+    }
+    conker_launcher_finish();
     return result;
 }
 
@@ -289,15 +336,17 @@ int main(int argc, char** argv) {
     desc.prepare_launch = [](recomp3ds::GameDesc& game) {
         const int version = choose_rom();
         if (version < 0) return false;
-        game.entry.rom_hash = version == 0 ? conker::roms::us_rom_hash : 0xAC445026C8F77A94ULL;
-        game.entry.rom_filename = version == 0 ? u8"CBFD.z64" : u8"CBFDUncensored.z64";
+        const auto& choice=conker_rom_choices::choices[version];
+        game.entry.rom_hash=choice.hash;
+        const char* name=choice.filename;
+        game.entry.rom_filename=std::u8string(reinterpret_cast<const char8_t*>(name));
         char path[192];
         snprintf(path,sizeof(path),"sdmc:/3ds/ConkerRecomp/%s",(const char*)game.entry.rom_filename.c_str());
         conker_set_rom_path(path);
-        if (!recomp3ds::screen_conker_load_rom(path)) recomp3ds::screen_set_conker_theme(false);
+        if (version!=g_launcher_art_rom && !recomp3ds::screen_conker_load_rom(path)) recomp3ds::screen_set_conker_theme(false);
         return true;
     };
-    recomp::Version::from_string("0.1.0", desc.project_version);
+    recomp::Version::from_string(CONKER_LAUNCHER_VERSION, desc.project_version);
 
     desc.rom_new3ds = recomp3ds::GameDesc::RomPlace::Stream;
     desc.rom_old3ds = recomp3ds::GameDesc::RomPlace::Stream;
@@ -322,7 +371,7 @@ int main(int argc, char** argv) {
         .on_init_callback = conker_on_init_3ds,
     };
 
-    desc.rom_hint = "Use the US retail ROM or the supported US Uncensored patch.\nFiles: CBFD.z64 / CBFDUncensored.z64";
+    desc.rom_hint = "Use a US retail, Uncensored or translation ROM.\nFiles: CBFD.z64 / CBFDUncensored.z64\nCBFDfr.z64 / CBFDes.z64 / CBFDptbr.z64";
     desc.rsp.get_rsp_microcode = get_rsp_microcode;
     desc.register_overlays = register_conker_overlays_and_exports;
 

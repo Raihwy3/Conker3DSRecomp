@@ -26,6 +26,8 @@
 #include "recomp3ds.h"
 #include "rt64_3ds.h"
 #include "conker_menu_tabs.h"
+#include "conker_launcher.h"
+#include <string>
 
 namespace {
 
@@ -198,6 +200,7 @@ constexpr uint16_t theme_rgb(int r, int g, int b) {
     return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
 }
 #include "conker_console_ui.h"
+#include "conker_launcher_ui.h"
 
 constexpr uint32_t kReleaseMs = 150;    // a copy queued before the stop is on the screen by then
 
@@ -246,8 +249,36 @@ void recomp3ds::log_init(const char* base_path) {
     }
 }
 
+extern "C" int conker_launcher_draw(const ConkerLauncherView* view) {
+    if(!view || !g_game_font_ready)return 0;
+    if(g_launcher_backdrop.empty()){
+        g_launcher_backdrop.resize(320*240);g_launcher_canvas.resize(320*240);
+        auto* saved=g_theme_base;const int chapter=g_background_chapter;
+        g_theme_base=g_launcher_backdrop.data();g_background_chapter=-1;game_background();
+        g_theme_base=saved;g_background_chapter=chapter;
+    }
+    for(int screen=0;screen<2;++screen){
+        const bool top=screen==0;
+        launcher_compose(g_launcher_canvas.data(),*view,top);
+        u16 w=0,h=0;auto* fb=(uint16_t*)gfxGetFramebuffer(top?GFX_TOP:GFX_BOTTOM,GFX_LEFT,&w,&h);
+        if(!fb)continue;
+        const int width=top?400:320,offset=(width-320)/2;
+        for(int x=0;x<width;++x)for(int y=0;y<240;++y){
+            const int sx=x-offset;
+            fb[x*240+239-y]=sx>=0 && sx<320?g_launcher_canvas[theme_index(sx,y)]:g_launcher_backdrop[theme_index(x<offset?0:319,y)];
+        }
+    }
+    gfxFlushBuffers();gfxSwapBuffers();return 1;
+}
+extern "C" void conker_launcher_finish() {
+    std::vector<uint16_t>().swap(g_launcher_backdrop);std::vector<uint16_t>().swap(g_launcher_canvas);
+}
+
 void recomp3ds::screen_set_conker_theme(bool enabled) { g_conker_theme = enabled; }
 void recomp3ds::screen_conker_set_options_button(int visible) { g_conker_options_visible=visible!=0;g_screen_dirty=true; }
+void recomp3ds::screen_conker_set_health_display(int enabled) {g_conker_health_visible=enabled!=0;g_screen_dirty=true;}
+void recomp3ds::screen_conker_set_money_display(int enabled) {g_conker_money_visible=enabled!=0;g_screen_dirty=true;}
+void recomp3ds::screen_conker_set_animated_tails(int enabled) {g_conker_animated_tails=enabled!=0;g_screen_dirty=true;}
 void recomp3ds::screen_conker_set_lives_display(int mode) {g_conker_lives_display=std::clamp(mode,0,2);g_screen_dirty=true;}
 void recomp3ds::screen_conker_set_chapter_display(int visible) {g_conker_chapter_visible=visible!=0;g_screen_dirty=true;}
 void recomp3ds::screen_conker_set_gfx_text(int visible) {g_conker_gfx_text=visible!=0;g_screen_dirty=true;}
@@ -259,6 +290,10 @@ void recomp3ds::screen_conker_set_rdram(const uint8_t* rdram) { g_conker_rdram=r
 void recomp3ds::screen_conker_set_player_camera_query(bool (*active)()) { g_conker_player_camera=active; }
 void recomp3ds::screen_conker_update() {
     update_conker_status();
+    const u64 tail_tick=svcGetSystemTick()/(SYSCLOCK_ARM11/30);
+    if(g_conker_animated_tails && g_conker_lives>0 && g_conker_lives_display!=2 && !g_conker_menu && tail_tick!=g_conker_tail_tick){
+        g_conker_tail_tick=tail_tick;g_screen_dirty=true;
+    }
     if(g_conker_notice_until && svcGetSystemTick()>g_conker_notice_until) {
         memset(g_game_cells[27],' ',40);g_conker_notice_until=0;g_screen_dirty=true;
     }
