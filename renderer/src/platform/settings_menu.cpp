@@ -116,7 +116,7 @@ int conker_tab_index() {
     return 0;
 }
 void conker_select_tab(int tab) {
-    g_conker_section=kConkerTabs[conker_menu::wrap(tab)];g_top=0;g_sel=0;g_redraw=true;
+    g_conker_section=kConkerTabs[conker_menu::wrap(tab)];g_top=0;g_sel=-1;g_redraw=true;
 }
 int g_conker_nav_first=-1;
 int g_conker_nav_values[CSectionCount]{};
@@ -1273,19 +1273,18 @@ void recomp3ds::settings_menu_update() {
         else if (pad != 0 && now >= next_repeat) { fire = true; act = pad; next_repeat = now + SYSCLOCK_ARM11 / 12; }
         if (fire) {
             const int n = page_count(g_page);
-            if (act & KEY_DUP) select_slot(g_sel >= 0 ? g_sel - 1 : n - 1);
-            else if (act & KEY_DDOWN) select_slot(g_sel + 1 < n ? g_sel + 1 : -1);
+            if (act & KEY_DUP) select_slot(screen_conker_theme() ? std::max(-1,g_sel-1) : (g_sel >= 0 ? g_sel - 1 : n - 1));
+            else if (act & KEY_DDOWN) select_slot(screen_conker_theme() ? std::min(n-1,g_sel+1) : (g_sel + 1 < n ? g_sel + 1 : -1));
             else if (act & (KEY_DLEFT | KEY_DRIGHT)) {
                 const int d = (act & KEY_DLEFT) ? -1 : 1;
                 // Pages turn on the press only.
                 if (g_sel < 0) {
-                    if(screen_conker_theme())conker_select_tab(conker_tab_index()+d);
+                    if(screen_conker_theme()) { if(down & (KEY_DLEFT|KEY_DRIGHT))conker_select_tab(conker_tab_index()+d); }
                     else if (down & (KEY_DLEFT | KEY_DRIGHT)) turn_page(d);
                 }
                 else {
                     int idx[kMaxRows];
-                    if(screen_conker_theme() && d<0 && g_sel<page_rows(g_page,idx) && conker_folder_row(idx[g_sel]))conker_back();
-                    else step(g_sel,d);
+                    if(!(screen_conker_theme() && g_sel<page_rows(g_page,idx) && conker_folder_row(idx[g_sel])))step(g_sel,d);
                 }
             }
         }

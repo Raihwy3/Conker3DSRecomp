@@ -1,6 +1,6 @@
 # Controls and bottom screen
 
-Options has five tabs: **Graphics, Controls, Audio, Interface and Misc**. Use the Circle Pad or D-pad to navigate, L/R to switch tabs, A to open a category or cycle a named option, B to go back, and Left/Right to adjust values. Tabs focus their first item immediately. Touch controls remain available.
+Options has five tabs: **Graphics, Controls, Audio, Interface and Misc**. Use the Circle Pad or D-pad to navigate, L/R to switch tabs, A to open a category or cycle a named option, B to go back, and Left/Right to adjust values. Tabs keep focus on the top row: Left/Right switches tabs, Down or A enters the list, and Up from the first item returns to the tabs. Category rows open with A; Left/Right never opens a category or goes back. Touch controls remain available.
 
 In Options, use **Controls → Presets** to apply one of these layouts:
 
