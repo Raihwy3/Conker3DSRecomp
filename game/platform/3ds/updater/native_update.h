@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include "update_config.h"
 #define NATIVE_UPDATE_API "https://api.github.com/repos/" NATIVE_UPDATE_REPOSITORY "/releases/latest"
+#define NATIVE_TEXPACK_REPOSITORY "Raihwy3/Conker3DSRecomp-HD-Textures"
+#define NATIVE_TEXPACK_API "https://api.github.com/repos/" NATIVE_TEXPACK_REPOSITORY "/releases/latest"
 #define NATIVE_UPDATE_MAX_ZIP (32u*1024u*1024u)
 struct NativeUpdateRelease {char tag[64],url[768],digest[65];size_t bytes;};
 int native_update_newer(const char *remote,const char *installed);
@@ -12,6 +14,7 @@ int native_update_newer(const char *remote,const char *installed);
 int native_update_validate_cia(const char *file,char *error,size_t capacity);
 int native_update_release_for(const char *json,size_t length,const char *installed,int cia,struct NativeUpdateRelease *out);
 int native_update_release(const char *json,size_t length,const char *installed,struct NativeUpdateRelease *out);
+int native_update_texpack_release(const char *json,size_t length,struct NativeUpdateRelease *out);
 /* A nonzero return means the installed pair is usable, or no recovery was needed. */
 int native_update_recover(const char *directory,char *error,size_t capacity);
 /* Stage both files, check ZIP CRCs and headers, then replace with a rollback journal. */

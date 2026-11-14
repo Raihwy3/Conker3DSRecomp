@@ -65,7 +65,7 @@ static int number(struct Json *j,int i,size_t *out) {
     if(!n || n>NATIVE_UPDATE_MAX_ZIP)return 0;
     *out=n;return 1;
 }
-int native_update_release_for(const char *json,size_t length,const char *installed,int cia,struct NativeUpdateRelease *out) {
+static int parse_release_asset(const char *json,size_t length,const char *repo,const char *installed,int cia,int texpack,struct NativeUpdateRelease *out) {
     if(!json || !out || length>65536)return 0;
     jsmntok_t *tokens=calloc(4096,sizeof *tokens);if(!tokens)return 0;
     jsmn_parser parser;jsmn_init(&parser);int n=jsmn_parse(&parser,json,length,tokens,4096);
@@ -73,14 +73,19 @@ int native_update_release_for(const char *json,size_t length,const char *install
     if(n<1 || tokens[0].type!=JSMN_OBJECT)goto end;
     for(size_t i=(size_t)tokens[0].end;i<length;i++)if(json[i]!=' ' && json[i]!='\r' && json[i]!='\n' && json[i]!='\t')goto end;
     if(!equal(&j,field(&j,0,"draft"),"false") || !equal(&j,field(&j,0,"prerelease"),"false"))goto end;
-    if(!string(&j,field(&j,0,"tag_name"),r.tag,sizeof r.tag) || !native_update_newer(r.tag,installed))goto end;
+    if(!string(&j,field(&j,0,"tag_name"),r.tag,sizeof r.tag))goto end;
+    if(!texpack && !native_update_newer(r.tag,installed))goto end;
     int assets=field(&j,0,"assets");if(assets<0 || tokens[assets].type!=JSMN_ARRAY)goto end;
     for(int i=assets+1;i<n && tokens[i].start<tokens[assets].end;i=skip(&j,i)) {
         char name[160],hash[80];
         if(!string(&j,field(&j,i,"name"),name,sizeof name))continue;
         size_t size=strlen(name);
-        if(size<5 || strcmp(name+size-4,cia?".cia":".zip") ||
-           strncmp(name,"conker-3ds-recomp",17))continue;
+        if(texpack){
+            if(strcmp(name,"texpack.bin")!=0)continue;
+        }else{
+            if(size<5 || strcmp(name+size-4,cia?".cia":".zip") ||
+               strncmp(name,"conker-3ds-recomp",17))continue;
+        }
         // Asset names are path components, never paths or escaped URLs.
         int safe=1;for(size_t k=0;k<size;k++)if(!((name[k]>='a' && name[k]<='z') || (name[k]>='A' && name[k]<='Z') || (name[k]>='0' && name[k]<='9') || name[k]=='-' || name[k]=='_' || name[k]=='.'))safe=0;
         if(!safe)continue;
@@ -89,11 +94,17 @@ int native_update_release_for(const char *json,size_t length,const char *install
            !number(&j,field(&j,i,"size"),&r.bytes))continue;
         int valid=1;for(int k=7;k<71;k++)if(!((hash[k]>='0' && hash[k]<='9') || (hash[k]>='a' && hash[k]<='f')))valid=0;
         if(!valid)continue;
-        char prefix[256];snprintf(prefix,sizeof prefix,"https://github.com/%s/releases/download/%s/",NATIVE_UPDATE_REPOSITORY,r.tag);
+        char prefix[256];snprintf(prefix,sizeof prefix,"https://github.com/%s/releases/download/%s/",repo,r.tag);
         if(strncmp(r.url,prefix,strlen(prefix)) || strcmp(r.url+strlen(prefix),name))continue;
         memcpy(r.digest,hash+7,65);*out=r;ok=1;break;
     }
 end:free(tokens);return ok;
+}
+int native_update_release_for(const char *json,size_t length,const char *installed,int cia,struct NativeUpdateRelease *out) {
+    return parse_release_asset(json,length,NATIVE_UPDATE_REPOSITORY,installed,cia,0,out);
+}
+int native_update_texpack_release(const char *json,size_t length,struct NativeUpdateRelease *out) {
+    return parse_release_asset(json,length,NATIVE_TEXPACK_REPOSITORY,NULL,0,1,out);
 }
 int native_update_release(const char *json,size_t length,const char *installed,struct NativeUpdateRelease *out) {
     return native_update_release_for(json,length,installed,0,out);

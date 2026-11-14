@@ -25,11 +25,14 @@ static void worker(void *p){
     if(buffer){
         if(R_SUCCEEDED(socInit(buffer,256*1024))){
             struct NativeUpdateTransfer t={0};t.cancel=cancelled;t.progress=received;
-            const char *url=NATIVE_UPDATE_API;
+            const char *url=texpack_mode?NATIVE_TEXPACK_API:NATIVE_UPDATE_API;
             if(job.download){url=job.release.url;t.file=job.file;t.expected=job.release.bytes;t.digest=job.release.digest;}
             else {t.memory=job.metadata;t.capacity=sizeof job.metadata;}
             job.ok=native_update_http(url,&t,native_update_ca,sizeof native_update_ca-1,job.error,sizeof job.error);
-            if(job.ok && !job.download)job.ok=native_update_release_for(job.metadata,t.length,NATIVE_RELEASE_TAG,cia_mode,&job.release);
+            if(job.ok && !job.download){
+                job.ok=texpack_mode?native_update_texpack_release(job.metadata,t.length,&job.release)
+                                    :native_update_release_for(job.metadata,t.length,NATIVE_RELEASE_TAG,cia_mode,&job.release);
+            }
             socExit();
         }
         free(buffer);
@@ -69,8 +72,8 @@ static int transfer(int download){
     while(!__atomic_load_n(&job.done,__ATOMIC_ACQUIRE)){
         if(!aptMainLoop() || buttons()<0 || (!download && osGetTime()-started>4500)){skip=1;__atomic_store_n(&job.cancel,1,__ATOMIC_RELAXED);}
         if(osGetTime()>=paint){
-            const char *st=texpack_mode?"DOWNLOADING HD TEXTURES":download?"DOWNLOADING UPDATE":"CHECKING FOR UPDATES";
-            const char *msg=skip?"Cancelling...":texpack_mode?"Saving texpack.bin (131 MB)...":download?"Saving the new launcher...":"Checking GitHub releases...";
+            const char *st=texpack_mode?(download?"DOWNLOADING HD TEXTURES":"CHECKING HD TEXTURES"):download?"DOWNLOADING UPDATE":"CHECKING FOR UPDATES";
+            const char *msg=skip?"Cancelling...":texpack_mode?(download?"Saving texpack.bin...":"Checking latest texture pack..."):download?"Saving the new launcher...":"Checking GitHub releases...";
             draw(st,msg,download?"B: Cancel":"B: Skip",__atomic_load_n(&job.received,__ATOMIC_RELAXED),__atomic_load_n(&job.total,__ATOMIC_RELAXED));
             paint=osGetTime()+200;
         }
@@ -116,13 +119,15 @@ int conker_download_texpack(PrintConsole *top,PrintConsole *bottom){
     top_screen=top;bottom_screen=bottom;
     u32 wifi=0;if(R_FAILED(acInit()))return 0;Result rc=ACU_GetWifiStatus(&wifi);acExit();
     if(R_FAILED(rc)||!wifi){prompt("NO WI-FI","Connect to Wi-Fi to download HD textures.","A: Back  B: Back");return 0;}
-    if(prompt("HD TEXTURES","Download 2x HD texture pack (~131 MB) to your SD card?","A: Download  B: Cancel")<=0)return 0;
     memset(&job.release,0,sizeof job.release);
-    snprintf(job.release.url,sizeof job.release.url,"https://github.com/Raihwy3/Conker3DSRecomp-HD-Textures/releases/download/v0.1/texpack.bin");
-    snprintf(job.release.digest,sizeof job.release.digest,"16256a1b605f5414e84ef217f5813ff8ad3a89400c53d4b8bf316a1d14af1a59");
-    job.release.bytes=137282824u;
-    snprintf(job.file,sizeof job.file,"%s/texpack.bin.part",directory);
     texpack_mode=1;
+    int found=transfer(0);
+    if(!found){texpack_mode=0;prompt("NO TEXTURE PACK",job.error[0]?job.error:"Could not find latest HD texture pack release.","A: Back  B: Back");return 0;}
+    char msg[128];
+    unsigned mb=(unsigned)((job.release.bytes+(512u*1024u))/(1024u*1024u));
+    snprintf(msg,sizeof msg,"Download 2x HD texture pack (~%u MB) to your SD card?",mb);
+    if(prompt("HD TEXTURES",msg,"A: Download  B: Cancel")<=0){texpack_mode=0;return 0;}
+    snprintf(job.file,sizeof job.file,"%s/texpack.bin.part",directory);
     int ok=transfer(1);
     texpack_mode=0;
     if(!ok){remove(job.file);prompt("DOWNLOAD FAILED",job.error[0]?job.error:"Could not download HD textures.","A: Back  B: Back");return 0;}
