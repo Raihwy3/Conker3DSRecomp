@@ -21,6 +21,7 @@
 #include <cstring>
 
 #include "recomp.h"
+#include "conker_options.h"
 
 #define MINIMP3_IMPLEMENTATION
 #define MINIMP3_ONLY_MP3
@@ -143,11 +144,14 @@ extern "C" void conker_mp3_decode_frame(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t mp3_channels = g_info.channels > 0 ? (uint32_t)g_info.channels : 1;
     const uint32_t count = (uint32_t)samples < kSlotSamples ? (uint32_t)samples : kSlotSamples;
     const uint32_t base = stream + kSlots + slot * kSlotStride * 2;
+    const int voice_vol = conker3ds::get("audio_voice_vol", 100);
     for (uint32_t c = 0; c < channels; c++) {
         const uint32_t src = c < mp3_channels ? c : mp3_channels - 1;
         const uint32_t dst = base + c * kSlotStride * 2;
         for (uint32_t i = 0; i < count; i++) {
-            wr16(rdram, dst + i * 2, g_pcm[i * mp3_channels + src]);
+            int32_t s = g_pcm[i * mp3_channels + src];
+            if (voice_vol != 100) s = (s * voice_vol) / 100;
+            wr16(rdram, dst + i * 2, (int16_t)s);
         }
         for (uint32_t i = count; i < kSlotSamples; i++) {
             wr16(rdram, dst + i * 2, 0);

@@ -793,6 +793,7 @@ func = "n_alSynStartVoiceParams"
 before_vram = 0x1001E170
 text = """
 #ifdef __3DS__
+    { extern void conker_audio_vol_start(uint8_t*, recomp_context*); conker_audio_vol_start(rdram, ctx); }
     { extern void recomp3ds_synth_hook(uint8_t*, void*, int); recomp3ds_synth_hook(rdram, ctx, 1); }
 #endif
 """
@@ -809,6 +810,7 @@ func = "n_alSynSetVol"
 before_vram = 0x1001C910
 text = """
 #ifdef __3DS__
+    { extern void conker_audio_vol_set(uint8_t*, recomp_context*); conker_audio_vol_set(rdram, ctx); }
     { extern void recomp3ds_synth_hook(uint8_t*, void*, int); recomp3ds_synth_hook(rdram, ctx, 3); }
 #endif
 """
@@ -879,5 +881,23 @@ before_vram = 0x15007B2C
 text = """
 #ifdef __3DS__
     { extern void conker_skip_intro_loaded(uint8_t*,recomp_context*); conker_skip_intro_loaded(rdram,ctx); }
+#endif
+"""
+
+[[patches.hook]]
+func = "func_150082CC"
+before_vram = 0x150082CC
+text = """
+#ifdef __3DS__
+    { extern void conker_cutscene_skip_tick(uint8_t*, recomp_context*); conker_cutscene_skip_tick(rdram, ctx); }
+#endif
+"""
+
+[[patches.hook]]
+func = "func_15019130"
+before_vram = 0x15019130
+text = """
+#ifdef __3DS__
+    { extern int conker_frame_update_hook(uint8_t*, recomp_context*); if (conker_frame_update_hook(rdram, ctx)) return; }
 #endif
 """

@@ -11,6 +11,7 @@
 #include "native_update_ca.h"
 static PrintConsole *top_screen,*bottom_screen;
 static int cia_mode;
+static int texpack_mode;
 static struct {
     int download,cancel,done,ok;
     unsigned received,total;
@@ -67,7 +68,12 @@ static int transfer(int download){
     u64 started=osGetTime(),paint=0;int skip=0;
     while(!__atomic_load_n(&job.done,__ATOMIC_ACQUIRE)){
         if(!aptMainLoop() || buttons()<0 || (!download && osGetTime()-started>4500)){skip=1;__atomic_store_n(&job.cancel,1,__ATOMIC_RELAXED);}
-        if(osGetTime()>=paint){draw(download?"DOWNLOADING UPDATE":"CHECKING FOR UPDATES",skip?"Cancelling...":download?"Saving the new launcher...":"Checking GitHub releases...",download?"B: Cancel":"B: Skip",__atomic_load_n(&job.received,__ATOMIC_RELAXED),__atomic_load_n(&job.total,__ATOMIC_RELAXED));paint=osGetTime()+200;}
+        if(osGetTime()>=paint){
+            const char *st=texpack_mode?"DOWNLOADING HD TEXTURES":download?"DOWNLOADING UPDATE":"CHECKING FOR UPDATES";
+            const char *msg=skip?"Cancelling...":texpack_mode?"Saving texpack.bin (131 MB)...":download?"Saving the new launcher...":"Checking GitHub releases...";
+            draw(st,msg,download?"B: Cancel":"B: Skip",__atomic_load_n(&job.received,__ATOMIC_RELAXED),__atomic_load_n(&job.total,__ATOMIC_RELAXED));
+            paint=osGetTime()+200;
+        }
         gspWaitForVBlank();
     }
     // Never reuse the transfer buffers or shut down SOC while its worker is alive.
@@ -104,4 +110,24 @@ int conker_update_startup(PrintConsole *top,PrintConsole *bottom){
     snprintf(path,sizeof path,"%s/launcher-update.zip",directory);remove(path);
     if(rename(job.file,path) || !native_update_install(path,directory,stage_progress,error,sizeof error))return prompt("UPDATE NOT INSTALLED",error[0]?error:"Unable to save update.","A: Play  B: Exit")>0;
     return prompt("UPDATE INSTALLED","Relaunch to use the new version.","A: Exit  B: Play")<0;
+}
+int conker_download_texpack(PrintConsole *top,PrintConsole *bottom){
+    const char *directory="sdmc:/3ds/ConkerRecomp";
+    top_screen=top;bottom_screen=bottom;
+    u32 wifi=0;if(R_FAILED(acInit()))return 0;Result rc=ACU_GetWifiStatus(&wifi);acExit();
+    if(R_FAILED(rc)||!wifi){prompt("NO WI-FI","Connect to Wi-Fi to download HD textures.","A: Back  B: Back");return 0;}
+    if(prompt("HD TEXTURES","Download 2x HD texture pack (~131 MB) to your SD card?","A: Download  B: Cancel")<=0)return 0;
+    memset(&job.release,0,sizeof job.release);
+    snprintf(job.release.url,sizeof job.release.url,"https://github.com/Raihwy3/Conker3DSRecomp-HD-Textures/releases/download/v0.1/texpack.bin");
+    snprintf(job.release.digest,sizeof job.release.digest,"16256a1b605f5414e84ef217f5813ff8ad3a89400c53d4b8bf316a1d14af1a59");
+    job.release.bytes=137282824u;
+    snprintf(job.file,sizeof job.file,"%s/texpack.bin.part",directory);
+    texpack_mode=1;
+    int ok=transfer(1);
+    texpack_mode=0;
+    if(!ok){remove(job.file);prompt("DOWNLOAD FAILED",job.error[0]?job.error:"Could not download HD textures.","A: Back  B: Back");return 0;}
+    char dest[640];snprintf(dest,sizeof dest,"%s/texpack.bin",directory);remove(dest);
+    if(rename(job.file,dest)){remove(job.file);prompt("SAVE FAILED","Unable to save texpack.bin to SD card.","A: Back  B: Back");return 0;}
+    prompt("HD TEXTURES READY","Downloaded texpack.bin! Toggle HD textures in Display settings.","A: Continue  B: Continue");
+    return 1;
 }

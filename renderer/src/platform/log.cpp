@@ -265,7 +265,9 @@ extern "C" int conker_launcher_draw(const ConkerLauncherView* view) {
         const int width=top?400:320,offset=(width-320)/2;
         for(int x=0;x<width;++x)for(int y=0;y<240;++y){
             const int sx=x-offset;
-            fb[x*240+239-y]=sx>=0 && sx<320?g_launcher_canvas[theme_index(sx,y)]:g_launcher_backdrop[theme_index(x<offset?0:319,y)];
+            const bool in_canvas=(sx>=0 && sx<320);
+            const bool in_wide_panel=(top && x>=16 && x<width-16);
+            fb[x*240+239-y]=in_canvas?g_launcher_canvas[theme_index(sx,y)]:in_wide_panel?g_launcher_canvas[theme_index(sx<0?0:319,y)]:g_launcher_backdrop[theme_index(x<offset?0:319,y)];
         }
     }
     gfxFlushBuffers();gfxSwapBuffers();return 1;

@@ -9,23 +9,85 @@
 #include "rt64_3ds.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <sys/stat.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
+
+extern "C" __attribute__((weak)) int conker3ds_hd_textures_enabled();
+static std::atomic<bool> g_flush_texcache{false};
+extern "C" void rt64_3ds_flush_textures() { g_flush_texcache.store(true); }
 
 namespace rt64_3ds {
 
 namespace {
 
-constexpr uint32_t kMaxLive = 320;
-constexpr uint32_t kMaxBytes = 8u * 1024 * 1024;
+constexpr uint32_t kMaxLive = 640;
+constexpr uint32_t kMaxBytes = 12u * 1024 * 1024;
 // Linear memory the cache leaves the rest of the renderer: below it (or
 // after a texture found no room at all) the textures not used for two
 // frames go, whatever kMaxBytes allows. A game with a small linear heap
 // (Dinosaur Planet's mods build had 5.4 MB left for textures) otherwise
 // filled it and every new texture failed from then on.
-constexpr uint32_t kLinearFloor = 512u * 1024;
+constexpr uint32_t kLinearFloor = 1024u * 1024;
+
+struct TexPackEntry {
+    uint32_t hash;
+    uint16_t w1, h1, w2, h2;
+    uint32_t offset;
+};
+
+struct TexPack {
+    FILE* fp = nullptr;
+    bool tried = false;
+    std::vector<TexPackEntry> entries;
+};
+
+TexPack& get_tex_pack() {
+    static TexPack tp;
+    if (!tp.tried) {
+        tp.tried = true;
+        tp.fp = fopen("sdmc:/3ds/ConkerRecomp/texpack.bin", "rb");
+        if (tp.fp) {
+            char magic[4] = {};
+            uint32_t count = 0;
+            if (fread(magic, 1, 4, tp.fp) == 4 && memcmp(magic, "TXPK", 4) == 0 &&
+                fread(&count, 4, 1, tp.fp) == 1 && count > 0 && count < 100000) {
+                tp.entries.resize(count);
+                if (fread(tp.entries.data(), sizeof(TexPackEntry), count, tp.fp) != count) {
+                    tp.entries.clear();
+                    fclose(tp.fp);
+                    tp.fp = nullptr;
+                } else {
+                    fprintf(stderr, "rt64-3ds: loaded texpack.bin (%u textures)\n", (unsigned)count);
+                }
+            } else {
+                fprintf(stderr, "rt64-3ds: texpack.bin bad header\n");
+                fclose(tp.fp);
+                tp.fp = nullptr;
+            }
+        } else {
+            fprintf(stderr, "rt64-3ds: failed to open sdmc:/3ds/ConkerRecomp/texpack.bin\n");
+        }
+    }
+    return tp;
+}
+
+int32_t find_texpack_idx(uint32_t hash, uint16_t w1, uint16_t h1) {
+    TexPack& tp = get_tex_pack();
+    if (!tp.fp || tp.entries.empty()) return -1;
+    auto it = std::lower_bound(tp.entries.begin(), tp.entries.end(), hash,
+                               [](const TexPackEntry& e, uint32_t h) { return e.hash < h; });
+    for (; it != tp.entries.end() && it->hash == hash; ++it) {
+        if (it->w1 == w1 && it->h1 == h1) {
+            return (int32_t)(it - tp.entries.begin());
+        }
+    }
+    return -1;
+}
 
 }   // namespace
 
@@ -373,6 +435,131 @@ BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* ban
         d.fmt == 3 && d.siz == 1 && d.bilerp && potw >= 16 && poth >= 16;
     if (generated) while ((potw >> levels) >= 8 && (poth >> levels) >= 8) levels++;
     GPU_TEXCOLOR fmt = wide ? GPU_RGBA8 : la8 ? GPU_LA8 : GPU_RGBA5551;
+
+    bool packed_hit = false;
+    bool swizzled_hit = false;
+    bool already_decoded = false;
+    int32_t tp_idx = -1;
+    static std::unordered_map<int32_t, std::vector<uint8_t>> swizzled_cache;
+    static size_t swizzled_cache_bytes = 0;
+    constexpr size_t kMaxSwizzledCache = 12u * 1024 * 1024;
+    uint32_t orig_potw = potw, orig_poth = poth;
+    uint32_t src_w = d.width, src_h = d.height;
+    const bool hd_on = !conker3ds_hd_textures_enabled || conker3ds_hd_textures_enabled() != 0;
+    if (!hd_on && !swizzled_cache.empty()) {
+        swizzled_cache.clear();
+        swizzled_cache_bytes = 0;
+    }
+    TexPack& tp = get_tex_pack();
+    if (hd_on && tp.fp && !tp.entries.empty() && d.width >= 16 && d.height >= 16) {
+        static std::unordered_map<uint64_t, int32_t> content_cache;
+        uint32_t tlut_h = 0;
+        if (tlut != nullptr) {
+            const uint32_t pal_off = (d.siz == 0) ? ((uint32_t)(d.palette & 0xFu) * 16u) : 0u;
+            const uint32_t tlut_words = (d.siz == 0) ? 8u : 128u; // 16 or 256 u16s
+            uint32_t th_fnv = 2166136261u;
+            const uint32_t* twp = reinterpret_cast<const uint32_t*>(tlut + pal_off);
+            for (uint32_t i = 0; i < tlut_words; i++) { th_fnv ^= twp[i]; th_fnv *= 16777619u; }
+            tlut_h = th_fnv;
+        }
+        uint64_t ckey = ((uint64_t)(h ^ tlut_h) << 16) ^ ((uint64_t)d.width) ^ ((uint64_t)d.height << 10) ^
+                        ((uint64_t)d.fmt << 20) ^ ((uint64_t)d.siz << 23) ^ ((uint64_t)d.palette << 25) ^ ((uint64_t)d.tlut_mode << 29);
+        auto cit = content_cache.find(ckey);
+        uint32_t fnv = 0;
+        if (cit != content_cache.end()) {
+            tp_idx = cit->second;
+        } else {
+            if (wide) impl_->stage32.assign(potw * poth, 0); else impl_->stage16.assign(potw * poth, 0);
+            already_decoded = true;
+            decode_texels(src, d, tlut, [&](uint32_t xt, uint32_t y, bool have16, uint16_t p16, uint32_t r, uint32_t g, uint32_t bl, uint32_t a) {
+                if (wide) impl_->stage32[y * potw + xt] = have16 ? rgba5551_to_rgba8(p16) : ((r << 24) | (g << 16) | (bl << 8) | a);
+                else if (la8) impl_->stage16[y * potw + xt] = have16 ? (uint16_t)0xFFFF : (uint16_t)((r << 8) | a);
+                else impl_->stage16[y * potw + xt] = have16 ? p16 : ia_to_rgba5551((uint8_t)r, (uint8_t)a);
+            });
+            fnv = 0x811c9dc5u;
+            for (uint32_t y = 0; y < d.height; y++) {
+                const uint32_t row = y * potw;
+                for (uint32_t x = 0; x < d.width; x++) {
+                    uint8_t q[4];
+                    if (wide) {
+                        uint32_t c = impl_->stage32[row + x];
+                        q[0] = (uint8_t)((c >> 27) & 31);
+                        q[1] = (uint8_t)((c >> 19) & 31);
+                        q[2] = (uint8_t)((c >> 11) & 31);
+                        q[3] = (uint8_t)((c >> 4) & 15);
+                    } else if (la8) {
+                        uint16_t p = impl_->stage16[row + x];
+                        uint8_t lum = (uint8_t)((p >> 11) & 31);
+                        q[0] = lum; q[1] = lum; q[2] = lum;
+                        q[3] = (uint8_t)((p >> 4) & 15);
+                    } else {
+                        uint16_t p = impl_->stage16[row + x];
+                        q[0] = (uint8_t)((p >> 11) & 31);
+                        q[1] = (uint8_t)((p >> 6) & 31);
+                        q[2] = (uint8_t)((p >> 1) & 31);
+                        q[3] = (uint8_t)((p & 1) ? 15 : 0);
+                    }
+                    for (int i = 0; i < 4; i++) {
+                        fnv ^= q[i];
+                        fnv *= 0x01000193u;
+                    }
+                }
+            }
+            tp_idx = find_texpack_idx(fnv, (uint16_t)d.width, (uint16_t)d.height);
+            if (content_cache.size() < 4096) content_cache.emplace(ckey, tp_idx);
+        }
+        if (tp_idx >= 0) {
+            const TexPackEntry& tpe = tp.entries[tp_idx];
+            uint32_t pw = pot(tpe.w2), ph = pot(tpe.h2);
+            auto sit = swizzled_cache.find(tp_idx);
+            if (sit != swizzled_cache.end()) {
+                swizzled_hit = true;
+                packed_hit = true;
+                wide = false;
+                fmt = GPU_RGBA4;
+                potw = pw;
+                poth = ph;
+                src_w = tpe.w2;
+                src_h = tpe.h2;
+                levels = 1;
+            } else {
+                impl_->stage16.assign(pw * ph, 0);
+                if (fseek(tp.fp, (long)tpe.offset, SEEK_SET) == 0) {
+                    bool ok = true;
+                    if (tpe.w2 == pw) {
+                        ok = (fread(impl_->stage16.data(), 2, (size_t)tpe.w2 * tpe.h2, tp.fp) == (size_t)tpe.w2 * tpe.h2);
+                    } else {
+                        for (uint32_t y = 0; y < tpe.h2; y++) {
+                            if (fread(&impl_->stage16[y * pw], 2, tpe.w2, tp.fp) != tpe.w2) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (ok) {
+                        packed_hit = true;
+                        wide = false;
+                        fmt = GPU_RGBA4;
+                        potw = pw;
+                        poth = ph;
+                        src_w = tpe.w2;
+                        src_h = tpe.h2;
+                        levels = 1;
+                    }
+                }
+            }
+        }
+        static uint32_t tp_hits = 0, tp_misses = 0;
+        if (packed_hit) {
+            if (++tp_hits <= 5) fprintf(stderr, "rt64-3ds: texpack HIT %ux%u -> %ux%u (hash %08x)\n", (unsigned)d.width, (unsigned)d.height, (unsigned)src_w, (unsigned)src_h, (unsigned)fnv);
+        } else {
+            ++tp_misses;
+        }
+        if (((tp_hits + tp_misses) & 255) == 0) {
+            fprintf(stderr, "rt64-3ds: texpack stats: %u hits, %u misses\n", (unsigned)tp_hits, (unsigned)tp_misses);
+        }
+    }
+
     // Decodes a level into the stage, rows `stride` texels apart.
     auto decode_level = [&](const TexDesc& ld, uint32_t stride) {
         decode_texels(src, ld, tlut, [&](uint32_t xt, uint32_t y, bool have16, uint16_t p16, uint32_t r, uint32_t g, uint32_t bl, uint32_t a) {
@@ -381,18 +568,22 @@ BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* ban
             else impl_->stage16[y * stride + xt] = have16 ? p16 : ia_to_rgba5551((uint8_t)r, (uint8_t)a);
         });
     };
-    if (wide) impl_->stage32.assign(potw * poth, 0); else impl_->stage16.assign(potw * poth, 0);
-    decode_level(d, potw);
-    for (uint32_t y = 0; y < d.height; y++) {
-        // Pad the row to the POT width with the last texel (clamping looks right).
-        for (uint32_t x = d.width; x < potw; x++) {
-            if (wide) impl_->stage32[y * potw + x] = impl_->stage32[y * potw + d.width - 1];
-            else impl_->stage16[y * potw + x] = impl_->stage16[y * potw + d.width - 1];
-        }
+    if (!packed_hit && !already_decoded) {
+        if (wide) impl_->stage32.assign(potw * poth, 0); else impl_->stage16.assign(potw * poth, 0);
+        decode_level(d, potw);
     }
-    for (uint32_t y = d.height; y < poth; y++) {
-        if (wide) memcpy(&impl_->stage32[y * potw], &impl_->stage32[(d.height - 1) * potw], potw * 4);
-        else memcpy(&impl_->stage16[y * potw], &impl_->stage16[(d.height - 1) * potw], potw * 2);
+    if (!swizzled_hit) {
+        for (uint32_t y = 0; y < src_h; y++) {
+            // Pad the row to the POT width with the last texel (clamping looks right).
+            for (uint32_t x = src_w; x < potw; x++) {
+                if (wide) impl_->stage32[y * potw + x] = impl_->stage32[y * potw + src_w - 1];
+                else impl_->stage16[y * potw + x] = impl_->stage16[y * potw + src_w - 1];
+            }
+        }
+        for (uint32_t y = src_h; y < poth; y++) {
+            if (wide) memcpy(&impl_->stage32[y * potw], &impl_->stage32[(src_h - 1) * potw], potw * 4);
+            else memcpy(&impl_->stage16[y * potw], &impl_->stage16[(src_h - 1) * potw], potw * 2);
+        }
     }
 
     Entry e;
@@ -404,6 +595,29 @@ BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* ban
     // mipmaps go.
     uint32_t tw = potw, th = poth, made_levels = levels;
     bool made = C3D_TexInitWithParams(&e.tex, nullptr, C3D_TexInitParams{ (u16)tw, (u16)th, (u8)(made_levels - 1), fmt, GPU_TEX_2D, false });
+    if (!made && swizzled_hit && tp_idx >= 0 && tp.fp) {
+        // Need linear stage16 texels before halve_stage can downsample.
+        const TexPackEntry& tpe = tp.entries[tp_idx];
+        impl_->stage16.assign(potw * poth, 0);
+        if (fseek(tp.fp, (long)tpe.offset, SEEK_SET) == 0) {
+            bool ok = true;
+            if (tpe.w2 == potw) {
+                ok = (fread(impl_->stage16.data(), 2, (size_t)tpe.w2 * tpe.h2, tp.fp) == (size_t)tpe.w2 * tpe.h2);
+            } else {
+                for (uint32_t y = 0; y < tpe.h2; y++) {
+                    if (fread(&impl_->stage16[y * potw], 2, tpe.w2, tp.fp) != tpe.w2) { ok = false; break; }
+                }
+            }
+            if (ok) {
+                for (uint32_t y = 0; y < src_h; y++)
+                    for (uint32_t x = src_w; x < potw; x++)
+                        impl_->stage16[y * potw + x] = impl_->stage16[y * potw + src_w - 1];
+                for (uint32_t y = src_h; y < poth; y++)
+                    memcpy(&impl_->stage16[y * potw], &impl_->stage16[(src_h - 1) * potw], potw * 2);
+                swizzled_hit = false;
+            }
+        }
+    }
     for (int halving = 0; !made && halving < 2 && tw * th >= 128u * 128u; halving++) {
         if (wide) halve_stage(impl_->stage32.data(), tw, th, mean8888);
         else if (la8) halve_stage(impl_->stage16.data(), tw, th, mean88);
@@ -421,8 +635,21 @@ BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* ban
         if (!made) return b;
     }
     const uint32_t bytes = C3D_TexCalcTotalSize(e.tex.size, made_levels - 1);
-    if (wide) swizzle32((uint32_t*)e.tex.data, impl_->stage32.data(), (int)tw, (int)th);
-    else swizzle16((uint16_t*)e.tex.data, impl_->stage16.data(), (int)tw, (int)th);
+    if (swizzled_hit) {
+        auto sit = swizzled_cache.find(tp_idx);
+        if (sit != swizzled_cache.end() && sit->second.size() == bytes) {
+            memcpy(e.tex.data, sit->second.data(), bytes);
+        } else {
+            swizzle16((uint16_t*)e.tex.data, impl_->stage16.data(), (int)tw, (int)th);
+        }
+    } else {
+        if (wide) swizzle32((uint32_t*)e.tex.data, impl_->stage32.data(), (int)tw, (int)th);
+        else swizzle16((uint16_t*)e.tex.data, impl_->stage16.data(), (int)tw, (int)th);
+        if (packed_hit && tp_idx >= 0 && tw == potw && th == poth && swizzled_cache_bytes + bytes <= kMaxSwizzledCache) {
+            swizzled_cache.emplace(tp_idx, std::vector<uint8_t>((const uint8_t*)e.tex.data, (const uint8_t*)e.tex.data + bytes));
+            swizzled_cache_bytes += bytes;
+        }
+    }
     // Mipmaps: each level from the game's own (TexDesc::levels; the
     // interpreter checked each is exactly half the one before, so none
     // needs padding), after the base in the texture's memory.
@@ -437,7 +664,7 @@ BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* ban
     // The kernel's flush on this core (GSPGPU_FlushDataCache is a request to
     // the GSP module on core 1, which waits for that core).
     svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)e.tex.data, bytes);
-    e.potw = potw; e.poth = poth; e.bytes = bytes; e.last_frame = impl_->frame; e.checked_frame = impl_->frame; e.content = h;
+    e.potw = orig_potw; e.poth = orig_poth; e.bytes = bytes; e.last_frame = impl_->frame; e.checked_frame = impl_->frame; e.content = h;
     memcpy(e.bands, bands, sizeof(e.bands));
     auto ins = impl_->map.emplace(key, e);
     if (ins.second) {
@@ -456,8 +683,8 @@ BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* ban
     if (impl_->vram && !kept.vram && !kept.vram_pending) to_vram(key, kept);
     b.tex = &kept.tex;
     b.fresh = true;
-    b.uscale = 1.0f / (float)potw;
-    b.vscale = 1.0f / (float)poth;
+    b.uscale = 1.0f / (float)orig_potw;
+    b.vscale = 1.0f / (float)orig_poth;
     return b;
 }
 
@@ -470,10 +697,11 @@ void TextureCache::end_frame() {
     impl_->retired[slot].clear();
     const bool short_of_memory = impl_->alloc_failed || linearSpaceFree() < kLinearFloor;
     impl_->alloc_failed = false;
-    if (live_ > kMaxLive || bytes_ > kMaxBytes || short_of_memory) {
-        // Retire everything not used in the last 2 frames.
+    const bool flush_all = g_flush_texcache.exchange(false);
+    if (flush_all || live_ > kMaxLive || bytes_ > kMaxBytes || short_of_memory) {
+        // Retire everything not used in the last 2 frames (or all on toggle).
         for (auto it = impl_->map.begin(); it != impl_->map.end();) {
-            if (it->second.last_frame + 2 < impl_->frame) {
+            if (flush_all || it->second.last_frame + 2 < impl_->frame) {
                 impl_->retired[slot].push_back(it->second.tex);
                 if (it->second.vram) vram_bytes_ -= it->second.bytes;
                 bytes_ -= it->second.bytes;

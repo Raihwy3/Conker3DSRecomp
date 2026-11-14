@@ -48,7 +48,7 @@ static int file_hash(const char *name,const char *expected) {
 int native_update_http(const char *url,struct NativeUpdateTransfer *t,const void *ca,size_t ca_size,char *error,size_t capacity) {
     int ok=0;char detail[CURL_ERROR_SIZE]={0};struct Writer writer={t,NULL};CURL *curl=NULL;
     if(!url || strncmp(url,"https://",8) || (!t->file && (!t->memory || t->capacity<2)) ||
-       (t->file && (!t->digest || !t->expected || t->expected>NATIVE_UPDATE_MAX_ZIP)))goto end;
+       (t->file && (!t->digest || !t->digest[0] || !t->expected || t->expected>(256u*1024u*1024u))))goto end;
     if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK)goto end;
     curl=curl_easy_init();if(!curl)goto cleanup;
     if(t->file){writer.file=fopen(t->file,"wb");if(!writer.file)goto cleanup;}
@@ -59,7 +59,9 @@ int native_update_http(const char *url,struct NativeUpdateTransfer *t,const void
     SET(CURLOPT_FOLLOWLOCATION,1L);SET(CURLOPT_MAXREDIRS,4L);
     SET(CURLOPT_PROTOCOLS_STR,"https");SET(CURLOPT_REDIR_PROTOCOLS_STR,"https");
     SET(CURLOPT_SSL_VERIFYPEER,1L);SET(CURLOPT_SSL_VERIFYHOST,2L);SET(CURLOPT_CAINFO_BLOB,&trust);
-    SET(CURLOPT_CONNECTTIMEOUT_MS,3000L);SET(CURLOPT_TIMEOUT_MS,t->file?120000L:4000L);
+    SET(CURLOPT_CONNECTTIMEOUT_MS,5000L);
+    if(t->file){SET(CURLOPT_TIMEOUT_MS,0L);SET(CURLOPT_LOW_SPEED_LIMIT,1024L);SET(CURLOPT_LOW_SPEED_TIME,30L);}
+    else{SET(CURLOPT_TIMEOUT_MS,4000L);}
     SET(CURLOPT_LOW_SPEED_LIMIT,1024L);SET(CURLOPT_LOW_SPEED_TIME,8L);
     SET(CURLOPT_NOSIGNAL,1L);SET(CURLOPT_FAILONERROR,1L);SET(CURLOPT_ERRORBUFFER,detail);
     SET(CURLOPT_WRITEFUNCTION,write_data);SET(CURLOPT_WRITEDATA,&writer);

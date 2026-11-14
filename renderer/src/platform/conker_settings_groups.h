@@ -3,16 +3,17 @@ enum ConkerSection { CRoot, CGraphics, CDisplay, CStereo, CEffects, CAppearance,
     CControls, CPresets, CSticks, CCamera, CAiming, CGyro, CTouch, CButtons,
     CAudio, COutput,
     CAchievements,
-    CMisc, CExtras, CDiagnostics, CSaveStates, CSectionCount };
+    CMisc, CExtras, CDiagnostics, CSaveStates, CCheats, CSectionCount };
 struct ConkerGroup { int parent; const char* title; };
 constexpr ConkerGroup kConkerGroups[CSectionCount]={
     {-1,"Categories"},{CRoot,"Graphics"},{CGraphics,"Display"},{CGraphics,"Stereoscopic 3D"},{CGraphics,"Image effects"},{CGraphics,"Appearance"},
     {CRoot,"Controls"},{CControls,"Presets"},{CControls,"Sticks"},{CControls,"Camera"},{CControls,"Aiming"},{CControls,"Gyro"},{CControls,"Touchscreen"},{CControls,"Button mapping"},
     {CRoot,"Audio"},{CAudio,"Output"},
     {CRoot,"Achievements"},
-    {CRoot,"Misc"},{CMisc,"Extras"},{CExtras,"Diagnostics"},{CMisc,"Save states"}};
+    {CRoot,"Misc"},{CMisc,"Extras"},{CExtras,"Diagnostics"},{CMisc,"Save states"},{CMisc,"Cheats"}};
 int conker_section_for(const char* key,int page) {
     if(!strncmp(key,"misc_state_",11))return CSaveStates;
+    if(!strncmp(key,"misc_cheat_",11))return CCheats;
     if(!strncmp(key,"ach_",4))return CAchievements;
     if(!strncmp(key,"misc_",5))return CExtras;
     if(!strcmp(key,"control_preset"))return CPresets;
@@ -20,7 +21,7 @@ int conker_section_for(const char* key,int page) {
     if(!strncmp(key,"gyro_",5) || !strncmp(key,"look_gyro_",10))return CGyro;
     if(!strncmp(key,"aim_",4) || !strncmp(key,"look_stick_",11))return CAiming;
     if(!strncmp(key,"camera_",7))return CCamera;
-    if(!strcmp(key,"model_highest") || !strcmp(key,"cutscene_4x3"))return CDisplay;
+    if(!strcmp(key,"model_highest") || !strcmp(key,"cutscene_4x3") || !strcmp(key,"hd_textures"))return CDisplay;
     if(page==recomp3ds::Page3D)return CStereo;
     if(!strcmp(key,"frame_cap") || !strcmp(key,"supersampling") || !strncmp(key,"brightness_",11))return CDisplay;
     if(!strcmp(key,"image_filter"))return CEffects;

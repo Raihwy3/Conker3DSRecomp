@@ -27,9 +27,9 @@ void launcher_wrap(uint16_t* out,const char* text,int x,int y,int width,int line
     }
     if(used && lines>0)game_text(out,line,x,y,width,colour);
 }
-void launcher_footer(uint16_t* out) {
+void launcher_footer(uint16_t* out,bool top=false) {
     const auto gold=theme_rgb(235,192,94);
-    launcher_rect(out,16,211,288,1,168,125,55,150);
+    launcher_rect(out,top?0:16,211,top?320:288,1,168,125,55,150);
     game_text(out,"CONKER: 3DS RECOMP  " CONKER_LAUNCHER_VERSION,160,220,286,gold,true);
 }
 void launcher_compose(uint16_t* out,const ConkerLauncherView& v,bool top) {
@@ -38,7 +38,7 @@ void launcher_compose(uint16_t* out,const ConkerLauncherView& v,bool top) {
     if(top){
         game_text(out,"CONKER:",160,14,280,gold,true);
         game_text(out,"3DS RECOMP",160,39,280,white,true);
-        launcher_panel(out,16,75,288,120);
+        launcher_panel(out,0,75,320,120);
         game_text(out,v.stage?v.stage:"GETTING READY",160,87,260,gold,true);
         launcher_wrap(out,v.message,28,115,264,3,white);
         if(v.detail)game_text(out,v.detail,160,174,262,muted,true);
@@ -73,5 +73,5 @@ void launcher_compose(uint16_t* out,const ConkerLauncherView& v,bool top) {
         launcher_rect(out,28,158,264,7,18,12,6);
         launcher_rect(out,29,159,262*percent/100,5,216,166,66);
     }
-    launcher_footer(out);
+    launcher_footer(out,top);
 }

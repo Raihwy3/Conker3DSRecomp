@@ -147,8 +147,35 @@ int value_cutscene_4x3=0;
 void apply_cutscene_4x3(int v){conker3ds::set("cutscene_4x3",v);}
 int value_model_highest=1;
 void apply_model_highest(int v){conker3ds::set("model_highest",v);}
+extern "C" int conker_download_texpack(PrintConsole *top, PrintConsole *bottom);
+
+int value_hd_textures=1;
+extern "C" void rt64_3ds_flush_textures();
+void apply_hd_textures(int v){conker3ds::set("hd_textures",v);rt64_3ds_flush_textures();}
+extern "C" int conker3ds_hd_textures_enabled(){return conker3ds::get("hd_textures",1);}
 int g_skip_intro=0;
 void apply_skip_intro(int v){conker3ds::set("misc_skip_intro",v);}
+int g_audio_music_vol=100, g_audio_sfx_vol=100, g_audio_voice_vol=100;
+void apply_audio_music_vol(int v){conker3ds::set("audio_music_vol",v);}
+void apply_audio_sfx_vol(int v){conker3ds::set("audio_sfx_vol",v);}
+void apply_audio_voice_vol(int v){conker3ds::set("audio_voice_vol",v);}
+int g_skip_cutscene=0;
+void apply_skip_cutscene(int v){conker3ds::set("misc_skip_cutscene",v);}
+int g_photo_mode=0;
+void apply_photo_mode(int v){
+    conker3ds::set("misc_photo_mode",v);
+    if(v!=0) recomp3ds::screen_conker_set_subnote("Photo: Pad move, C/D look, L/R up/dn, A shot, B exit");
+}
+extern "C" void conker_exit_photo_mode_ui(){
+    g_photo_mode=0;
+    conker3ds::set("misc_photo_mode",0);
+    recomp3ds::screen_conker_set_subnote("");
+}
+int g_cheat_invincible=0, g_cheat_inf_lives=0, g_cheat_max_cash=0, g_cheat_unlock_all=0;
+void apply_cheat_invincible(int v){conker3ds::set("misc_cheat_invincible",v);}
+void apply_cheat_inf_lives(int v){conker3ds::set("misc_cheat_inf_lives",v);}
+void apply_cheat_max_cash(int v){conker3ds::set("misc_cheat_max_cash",v);}
+void apply_cheat_unlock_all(int v){conker3ds::set("misc_cheat_unlock_all",v);}
 
 int g_reset_options = 0;
 const char* const kResetOptionsNames[] = { "Press >", "Reset!" };
@@ -220,7 +247,16 @@ void apply_achievement_row(int v) {
 }
 
 const MenuOption kOptions[] = {
+    {"audio_music_vol","Music volume",0,100,&g_audio_music_vol,nullptr,apply_audio_music_vol,PageGame},
+    {"audio_sfx_vol","SFX volume",0,100,&g_audio_sfx_vol,nullptr,apply_audio_sfx_vol,PageGame},
+    {"audio_voice_vol","Voice volume",0,100,&g_audio_voice_vol,nullptr,apply_audio_voice_vol,PageGame},
     {"misc_skip_intro","Skip intro",0,1,&g_skip_intro,kOffOn,apply_skip_intro,PageGame},
+    {"misc_skip_cutscene","Hold B skip cutscene",0,1,&g_skip_cutscene,kOffOn,apply_skip_cutscene,PageGame},
+    {"misc_photo_mode","Photo mode",0,1,&g_photo_mode,kOffOn,apply_photo_mode,PageGame},
+    {"misc_cheat_invincible","Cheat: Invincible",0,1,&g_cheat_invincible,kOffOn,apply_cheat_invincible,PageGame},
+    {"misc_cheat_inf_lives","Cheat: Infinite lives",0,1,&g_cheat_inf_lives,kOffOn,apply_cheat_inf_lives,PageGame},
+    {"misc_cheat_max_cash","Cheat: Max cash",0,1,&g_cheat_max_cash,kOffOn,apply_cheat_max_cash,PageGame},
+    {"misc_cheat_unlock_all","Cheat: Unlock chapters",0,1,&g_cheat_unlock_all,kOffOn,apply_cheat_unlock_all,PageGame},
     {"misc_reset_options","Reset all options",0,1,&g_reset_options,kResetOptionsNames,apply_reset_options,PageGame},
     {"misc_reset_achievements","Reset achievements",0,1,&g_reset_achievements,kResetAchievementsNames,apply_reset_achievements,PageGame},
     {"misc_state_slot","Save state slot",1,9,&g_state_slot,nullptr,apply_state_slot,PageGame},
@@ -292,6 +328,7 @@ const MenuOption kOptions[] = {
     {"look_gyro_invert","Gyro inversion",0,3,&value_look_gyro_invert,kInvert,apply_look_gyro_invert,PageControls},
     {"cutscene_4x3","Cutscene framing",0,1,&value_cutscene_4x3,kCutscene,apply_cutscene_4x3,PageGame},
     {"model_highest","Conker detail",0,1,&value_model_highest,kDetail,apply_model_highest,PageGame},
+    {"hd_textures","HD textures",0,1,&value_hd_textures,kOffOn,apply_hd_textures,PageGame},
 };
 
 void set_fr_mode(recomp_context* ctx) {
@@ -304,6 +341,7 @@ void on_thread_create(uint8_t*, recomp_context* ctx) {
 }
 
 void conker_on_init_3ds(uint8_t* rdram, recomp_context* ctx) {
+    conker_exit_photo_mode_ui();
     recomp3ds::screen_conker_set_rdram(rdram);
     conker::register_tlb_mapped_code();
     conker::map_tlb_code_pages(rdram);
@@ -412,13 +450,18 @@ static int choose_rom() {
             if(translations){translations=false;selected=2;redraw=true;}
             else break;
         }
+        if(released && !translations && (down&KEY_X)){
+            conker_download_texpack(&top, &bottom);
+            redraw=true;
+        }
         if (redraw) {
             ConkerLauncherView view{};
             view.menu=1;view.selected=selected;
             view.stage=translations?"TRANSLATIONS":"SELECT VERSION";
             view.message="Pick a version below. Your ROM is checked before the game starts.";
             view.detail="SAVES AND SETTINGS ARE SHARED";
-            view.actions=translations?"A: SELECT    B: BACK    < >: PAGE":"A: SELECT    B: EXIT";
+            const bool has_texpack = access("sdmc:/3ds/ConkerRecomp/texpack.bin", F_OK) == 0;
+            view.actions=translations?"A: SELECT    B: BACK    < >: PAGE":has_texpack?"A: SELECT   X: RE-DL HD   B: EXIT":"A: SELECT   X: HD TEX   B: EXIT";
             for(int row=0;row<3;++row){
                 if(!translations){
                     const bool folder=row==2;
