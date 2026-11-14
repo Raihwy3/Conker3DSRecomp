@@ -16,6 +16,7 @@ This repository contains several projects with different licences. `LICENSE` is 
 | xxHash, concurrentqueue | BSD; semaphore also has a zlib notice | original files and `licenses/` |
 | jsmn | MIT | `licenses/jsmn-MIT.txt` |
 | curl, mbedTLS, MiniZip, zlib | curl licence, Apache-2.0, MiniZip/zlib terms | `licenses/` |
+| makerom Homebrew boot logo (CIA only) | MIT | `licenses/makerom-homebrew-logo.txt` |
 | Mozilla CA certificates | MPL-2.0 | `licenses/Mozilla-MPL-2.0.txt` |
 | libctru, citro3d, newlib | component-specific permissive terms | `licenses/` |
 | GCC runtime libraries | GPLv3 with GCC Runtime Library Exception | `licenses/` |

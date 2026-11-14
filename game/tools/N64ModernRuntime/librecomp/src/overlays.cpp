@@ -150,6 +150,39 @@ void recomp::overlays::add_loaded_function(int32_t ram, recomp_func_t* func) {
     func_map[ram] = func;
 }
 
+bool recomp::overlays::find_loaded_function(uint32_t vram, uint32_t& func_vram, uint32_t& func_rom, uint32_t& func_size) {
+    for (const LoadedSection& loaded : loaded_sections) {
+        const SectionTableEntry& section = sections_info.code_sections[loaded.section_table_index];
+        uint32_t sec_start = (uint32_t)loaded.loaded_ram_addr;
+        if (vram < sec_start || vram >= sec_start + section.size) {
+            continue;
+        }
+        uint32_t offset = vram - sec_start;
+        const FuncEntry* best = nullptr;
+        for (size_t i = 0; i < section.num_funcs; i++) {
+            const FuncEntry& f = section.funcs[i];
+            if (f.offset <= offset && (!best || f.offset > best->offset)) {
+                best = &f;
+            }
+        }
+        if (best == nullptr) {
+            return false;
+        }
+        uint32_t next_offset = section.size;
+        for (size_t i = 0; i < section.num_funcs; i++) {
+            const FuncEntry& f = section.funcs[i];
+            if (f.offset > best->offset && f.offset < next_offset) {
+                next_offset = f.offset;
+            }
+        }
+        func_vram = sec_start + best->offset;
+        func_rom = section.rom_addr + best->offset;
+        func_size = next_offset - best->offset;
+        return true;
+    }
+    return false;
+}
+
 void load_overlay(size_t section_table_index, int32_t ram) {
     const SectionTableEntry& section = sections_info.code_sections[section_table_index];
 

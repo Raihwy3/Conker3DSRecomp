@@ -12,9 +12,9 @@ Includes stereoscopic 3D, interpolated presentation, graphics filters, DSP audio
 
 The Uncensored ROM can also be placed there as `CBFDUncensored.z64`. The launcher lets you choose which ROM to start. All versions share saves and settings.
 
-For translations, place `CBFDfr.z64` (French), `CBFDes.z64` (Spanish) or `CBFDptbr.z64` (Brazilian Portuguese) in the same folder, then choose **Translations** at startup.
+For translations, place `CBFDfr.z64` (French), `CBFDes.z64` (Spanish), `CBFDptbr.z64` (Brazilian Portuguese), `CBFDru.z64` (Russian) or `CBFDde.z64` (German) in the same folder, then choose **Translations** at startup.
 
-The launcher uses Conker’s ROM-derived font and pub-floor background for version selection and update screens. The Translations entry lists ES, FR and PTBR beneath it.
+The launcher uses Conker’s ROM-derived font and pub-floor background for version selection and update screens. The Translations entry lists ES, FR, PTBR, RU and DE.
 
 No ROM or extracted game artwork, music or textures is supplied in this source repository. The interface reads its game artwork from your ROM. The public launcher icon is an original monogram.
 
@@ -23,6 +23,8 @@ See [Controls and bottom screen](docs/CONTROLS.md) for control presets and displ
 ## Build and updates
 
 See [Building](docs/BUILDING.md) for the required tools and ROM-based build steps, and [Updates](docs/UPDATER.md) for release packaging and the optional startup updater.
+
+A standalone HOME Menu [CIA build](docs/CIA.md) can use the same SD folder. Its updater downloads CIA packages for installation with FBI.
 
 ## Credits and licences
 

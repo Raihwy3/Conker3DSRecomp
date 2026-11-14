@@ -13,6 +13,7 @@
 #include "blockingconcurrentqueue.h"
 
 #include "ultramodern/threads.hpp"
+#include "ultramodern/save_states.hpp"
 
 // Native APIs only used to set thread names for easier debugging
 #ifdef _WIN32
@@ -279,12 +280,14 @@ void run_next_thread(RDRAM_ARG1) {
 
 void ultramodern::run_next_thread_and_wait(RDRAM_ARG1) {
     UltraThreadContext* cur_context = TO_PTR(OSThread, thread_self)->context;
+    ultramodern::save_states::record_wait(cur_context, ultramodern::save_states::WaitKind::Stopped);
     run_next_thread(PASS_RDRAM1);
     wait_for_resumed(PASS_RDRAM cur_context);
 }
 
 void ultramodern::resume_thread_and_wait(RDRAM_ARG OSThread *t) {
     UltraThreadContext* cur_context = TO_PTR(OSThread, thread_self)->context;
+    ultramodern::save_states::record_wait(cur_context, ultramodern::save_states::WaitKind::Preempted);
     resume_thread(t);
     wait_for_resumed(PASS_RDRAM cur_context);
 }
@@ -294,10 +297,13 @@ static void _thread_func(RDRAM_ARG PTR(OSThread) self_, PTR(thread_func_t) entry
     debug_printf("[Thread] Thread created: %d\n", self->id);
     thread_self = self_;
     is_game_thread = true;
+    ultramodern::save_states::set_current_thread(thread_context);
 
     // Set the thread name
     ultramodern::set_native_thread_name(ultramodern::threads::get_game_thread_name(self));
     ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::High);
+
+    ultramodern::save_states::record_wait(thread_context, ultramodern::save_states::WaitKind::Stopped);
 
     // Signal the initialized semaphore to indicate that this thread can be started.
     thread_context->initialized.signal();
@@ -369,6 +375,7 @@ extern "C" void osCreateThread(RDRAM_ARG PTR(OSThread) t_, OSId id, PTR(thread_f
     UltraThreadContext* context = new UltraThreadContext{};
     t->context = context;
     context->load_slot = load_slot_alloc(t_);
+    ultramodern::save_states::register_thread(context, t_);
     context->host_thread = ultramodern::HostThread{ultramodern::HostThreadKind::Game, [=]() {
         _thread_func(PASS_RDRAM t_, entrypoint, arg, context);
     }};
@@ -472,6 +479,7 @@ void ultramodern::init_thread_cleanup() {
 }
 
 void ultramodern::cleanup_thread(UltraThreadContext *cur_context) {
+    ultramodern::save_states::unregister_thread(cur_context);
     deleted_threads.enqueue(cur_context);
 }
 

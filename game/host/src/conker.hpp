@@ -234,6 +234,12 @@ namespace conker {
         // Save states (save_states.cpp), as one is loaded: the scenes it has are put back with the game's memory,
         // so they count for nothing, as a save's do.
         void state_loaded();
+        size_t count();
+        size_t unlocked_count();
+        const char* title(size_t index);
+        const char* description(size_t index);
+        bool is_unlocked(size_t index);
+        void reset();
     }
 
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
@@ -252,6 +258,10 @@ namespace conker {
     namespace save_states {
         // At start (frontend.cpp): the keys, and the runtime's idle moment that states are taken at.
         void init();
+        void set_slot(int slot);
+        int get_slot();
+        void save();
+        void load();
     }
 
     // fps_counter.cpp: Show FPS, the frame rate counter.

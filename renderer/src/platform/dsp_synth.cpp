@@ -172,6 +172,7 @@ struct Voice {
 };
 
 LightLock g_lock;                   // the event queue, the wave slots and the clock mapping
+LightLock g_thread_lock;            // guards g_voices and synth_thread frame execution against state reset
 std::vector<Event> g_events;
 Wave g_waves[kWaveSlots];
 uint32_t g_wave_next = 0;
@@ -477,6 +478,7 @@ void synth_thread(void*) {
     while (!g_quit) {
         LightEvent_Wait(&g_frame_event);
         if (g_quit) break;
+        LightLock_Lock(&g_thread_lock);
         const u64 t0 = svcGetSystemTick();
         // Audio Off: the hooks stop, so nothing would ever stop what plays.
         if (!recomp3ds::audio_enabled()) {
@@ -536,6 +538,7 @@ void synth_thread(void*) {
             if (v.ended && !ndspChnIsPlaying(v.ch)) v.playing = false;
         }
         g_st_ticks = g_st_ticks + (uint32_t)(svcGetSystemTick() - t0);
+        LightLock_Unlock(&g_thread_lock);
     }
 }
 
@@ -889,6 +892,7 @@ bool recomp3ds::dsp_synth_init(const SynthDesc& desc) {
     if (desc.flavor == SynthFlavor::None || g_ready) return g_ready;
     g_desc = desc;
     LightLock_Init(&g_lock);
+    LightLock_Init(&g_thread_lock);
     LightEvent_Init(&g_frame_event, RESET_ONESHOT);
     for (int i = 0; i < 128; i++) g_eqpower[i] = (int16_t)lrint(32767.0 * cos(i * M_PI / 2.0 / 127.0));
     g_slots = kSlots - (int)desc.reserve_channels;
@@ -932,6 +936,30 @@ void recomp3ds::dsp_synth_set_enabled(bool on) {
         recomp3ds::dsp_reverb_configure(recomp3ds::ReverbConfig{});
     }
     fprintf(stderr, "dsp-synth: %s\n", on ? "on (the game's voices play on the DSP)" : "off (the audio task runs)");
+}
+
+void recomp3ds::dsp_synth_reset() {
+    if (!g_ready) return;
+    LightLock_Lock(&g_thread_lock);
+    LightLock_Lock(&g_lock);
+    g_events.clear();
+    g_mapped = false;
+    g_ai_offset = 0;
+    g_ai_measured = 0;
+    g_synth = 0;
+    LightLock_Unlock(&g_lock);
+    g_played = recomp3ds::audio_frames_played();
+    for (Voice& v : g_voices) {
+        stop_channel(v);
+        v.key = 0;
+        v.ended = false;
+        v.started = false;
+        v.ramp_left = 0.0f;
+        v.vol = 0.0f;
+        v.vol_target = 0.0f;
+    }
+    recomp3ds::dsp_reverb_configure(recomp3ds::ReverbConfig{});
+    LightLock_Unlock(&g_thread_lock);
 }
 
 bool recomp3ds::dsp_synth_enabled() { return g_ready && g_enabled; }

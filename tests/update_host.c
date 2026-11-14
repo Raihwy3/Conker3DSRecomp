@@ -14,10 +14,11 @@ static char *read_file(const char *path,size_t *bytes){FILE *f=fopen(path,"rb");
 int main(int argc,char **argv){
  char error[256]={0};
  if(argc==4 && !strcmp(argv[1],"compare"))return native_update_newer(argv[2],argv[3])?0:1;
- if(argc==4 && !strcmp(argv[1],"release")){
-  size_t n;char *json=read_file(argv[2],&n);if(!json)return 2;struct NativeUpdateRelease r={0};int ok=native_update_release(json,n,argv[3],&r);free(json);
+ if(argc==4 && (!strcmp(argv[1],"release") || !strcmp(argv[1],"release-cia"))){
+  size_t n;char *json=read_file(argv[2],&n);if(!json)return 2;struct NativeUpdateRelease r={0};int ok=native_update_release_for(json,n,argv[3],!strcmp(argv[1],"release-cia"),&r);free(json);
   if(ok)printf("%s\n%s\n%s\n%zu\n",r.tag,r.url,r.digest,r.bytes);return ok?0:1;
  }
+ if(argc==3 && !strcmp(argv[1],"cia")){int ok=native_update_validate_cia(argv[2],error,sizeof error);if(!ok)fprintf(stderr,"%s\n",error);return ok?0:1;}
  if(argc>=4 && !strcmp(argv[1],"install")){
   if(argc>4)fail_at=atoi(argv[4]);if(argc>5)cancel_at=atoi(argv[5]);
   int ok=native_update_install(argv[2],argv[3],progress,error,sizeof error);if(!ok)fprintf(stderr,"%s\n",error);return ok?0:1;

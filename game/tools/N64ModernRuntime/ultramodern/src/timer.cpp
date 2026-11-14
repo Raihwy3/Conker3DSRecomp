@@ -1,4 +1,6 @@
+#include <atomic>
 #include <map>
+#include <mutex>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -7,6 +9,7 @@
 
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
+#include "ultramodern/save_states.hpp"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -17,6 +20,8 @@
 static std::chrono::high_resolution_clock::time_point start_time = std::chrono::high_resolution_clock::now();
 // Offset of the duration since program start used to calculate the value for osGetTime. 
 static int64_t ostime_offset = 0;
+// Offset applied to the steady clock so save-state restore can make time_now() match the saved tick count.
+static std::atomic<int64_t> clock_offset = 0;
 // Game speed multiplier (1 means no speedup)
 constexpr uint32_t speed_multiplier = 1;
 // N64 CPU counter ticks per millisecond
@@ -52,9 +57,19 @@ struct RemoveTimerAction {
 
 using Action = std::variant<AddTimerAction, RemoveTimerAction>;
 
+struct ActiveTimer {
+    OSTime timestamp;
+    OSTime interval;
+    PTR(OSMesgQueue) mq;
+    OSMesg msg;
+};
+
 struct {
     ultramodern::HostThread thread;
     moodycamel::BlockingConcurrentQueue<Action> action_queue{};
+    std::mutex mutex;
+    std::map<PTR(OSTimer), ActiveTimer> active_timers;
+    std::set<std::pair<OSTime, PTR(OSTimer)>> firing_order;
 } timer_context;
 
 uint64_t duration_to_ticks(std::chrono::high_resolution_clock::duration duration) {
@@ -72,91 +87,136 @@ std::chrono::microseconds ticks_to_duration(uint64_t ticks) {
 }
 
 std::chrono::high_resolution_clock::time_point ticks_to_timepoint(uint64_t ticks) {
-    return start_time + ticks_to_duration(ticks);
+    return start_time + ticks_to_duration(ticks + clock_offset.load(std::memory_order_relaxed));
 }
 
 uint64_t time_now() {
-    return duration_to_ticks(std::chrono::high_resolution_clock::now() - start_time);
+    return duration_to_ticks(std::chrono::high_resolution_clock::now() - start_time) - clock_offset.load(std::memory_order_relaxed);
 }
 
 extern "C" volatile uint32_t ultramodern_dbg_counts[8];   // mesgqueue.cpp
+
+static void remove_timer_locked(PTR(OSTimer) timer) {
+    auto it = timer_context.active_timers.find(timer);
+    if (it != timer_context.active_timers.end()) {
+        timer_context.firing_order.erase({ it->second.timestamp, timer });
+        timer_context.active_timers.erase(it);
+    }
+}
+
+static void process_timer_action_locked(const Action& action) {
+    if (const auto* add_action = std::get_if<AddTimerAction>(&action)) {
+        remove_timer_locked(add_action->timer);
+        timer_context.active_timers[add_action->timer] = ActiveTimer{ add_action->timestamp, add_action->interval, add_action->mq, add_action->msg };
+        timer_context.firing_order.insert({ add_action->timestamp, add_action->timer });
+    } else if (const auto* remove_action = std::get_if<RemoveTimerAction>(&action)) {
+        remove_timer_locked(remove_action->timer);
+    }
+}
 
 void timer_thread(RDRAM_ARG1) {
     ultramodern::set_native_thread_name("Timer Thread");
     ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::VeryHigh);
 
-    // The active timers by timer, and in firing order (timestamp, then
-    // timer), both from the copies the actions carry.
-    struct ActiveTimer {
-        OSTime timestamp;
-        OSTime interval;
-        PTR(OSMesgQueue) mq;
-        OSMesg msg;
-    };
-    std::map<PTR(OSTimer), ActiveTimer> active_timers;
-    std::set<std::pair<OSTime, PTR(OSTimer)>> firing_order;
-
-    auto remove_timer = [&](PTR(OSTimer) timer) {
-        auto it = active_timers.find(timer);
-        if (it != active_timers.end()) {
-            firing_order.erase({ it->second.timestamp, timer });
-            active_timers.erase(it);
-        }
-    };
-
-    // Lambda to process a timer action to handle adding and removing timers
-    auto process_timer_action = [&](const Action& action) {
-        // Determine the action type and act on it
-        if (const auto* add_action = std::get_if<AddTimerAction>(&action)) {
-            // Setting a timer that is still active replaces it.
-            remove_timer(add_action->timer);
-            active_timers[add_action->timer] = ActiveTimer{ add_action->timestamp, add_action->interval, add_action->mq, add_action->msg };
-            firing_order.insert({ add_action->timestamp, add_action->timer });
-        } else if (const auto* remove_action = std::get_if<RemoveTimerAction>(&action)) {
-            remove_timer(remove_action->timer);
-        }
-    };
+    std::unique_lock lock(timer_context.mutex);
 
     while (true) {
         ultramodern_dbg_counts[3] = ultramodern_dbg_counts[3] + 1;
         // Empty the action queue
         Action cur_action;
         while (timer_context.action_queue.try_dequeue(cur_action)) {
-            process_timer_action(cur_action);
+            process_timer_action_locked(cur_action);
         }
 
         // If there's no timer to act on, wait for one to come in from the action queue
-        while (firing_order.empty()) {
+        while (timer_context.firing_order.empty()) {
+            lock.unlock();
             timer_context.action_queue.wait_dequeue(cur_action);
-            process_timer_action(cur_action);
+            lock.lock();
+            process_timer_action_locked(cur_action);
         }
 
         // The timer that's closest to running out
-        const OSTime timestamp = firing_order.begin()->first;
-        const PTR(OSTimer) cur_timer_ = firing_order.begin()->second;
+        const OSTime timestamp = timer_context.firing_order.begin()->first;
+        const PTR(OSTimer) cur_timer_ = timer_context.firing_order.begin()->second;
 
         // Determine how long to wait to reach the timer's timestamp
         auto wait_duration = ticks_to_timepoint(timestamp) - std::chrono::high_resolution_clock::now();
 
+        bool interrupted = false;
+        if (wait_duration.count() >= 0) {
+            lock.unlock();
+            interrupted = timer_context.action_queue.wait_dequeue_timed(cur_action, wait_duration);
+            lock.lock();
+        }
         // Wait for either the duration to complete or a new action to come through
-        if (wait_duration.count() >= 0 && timer_context.action_queue.wait_dequeue_timed(cur_action, wait_duration)) {
+        if (interrupted) {
             // Timer was interrupted by a new action: process it, then look again
-            process_timer_action(cur_action);
+            process_timer_action_locked(cur_action);
         }
         else {
+            auto it = timer_context.active_timers.find(cur_timer_);
+            if (it == timer_context.active_timers.end()) {
+                continue;
+            }
             // Waiting for the timer completed, so send the timer's message to its message queue
-            ActiveTimer fired = active_timers[cur_timer_];
-            firing_order.erase(firing_order.begin());
-            active_timers.erase(cur_timer_);
+            ActiveTimer fired = it->second;
+            timer_context.firing_order.erase({ fired.timestamp, cur_timer_ });
+            timer_context.active_timers.erase(it);
             ultramodern::enqueue_external_message_src(fired.mq, fired.msg, false, ultramodern::EventMessageSource::Timer);
             // If the timer has a specified interval then reload it with that value
             if (fired.interval != 0) {
                 fired.timestamp = fired.interval + time_now();
-                active_timers[cur_timer_] = fired;
-                firing_order.insert({ fired.timestamp, cur_timer_ });
+                timer_context.active_timers[cur_timer_] = fired;
+                timer_context.firing_order.insert({ fired.timestamp, cur_timer_ });
             }
         }
     }
+}
+
+int32_t ultramodern::save_states::timer_actions_pending() {
+    return (int32_t)timer_context.action_queue.size_approx();
+}
+
+void ultramodern::save_states::lock_timers() {
+    timer_context.mutex.lock();
+}
+
+void ultramodern::save_states::unlock_timers() {
+    timer_context.mutex.unlock();
+}
+
+ultramodern::save_states::TimerState ultramodern::save_states::get_timer_state() {
+    Action cur_action;
+    while (timer_context.action_queue.try_dequeue(cur_action)) {
+        process_timer_action_locked(cur_action);
+    }
+    TimerState s{};
+    s.now = time_now();
+    s.ostime_offset = ostime_offset;
+    for (const auto& [timer, _] : timer_context.active_timers) {
+        s.active.push_back(timer);
+    }
+    return s;
+}
+
+void ultramodern::save_states::set_timer_state(RDRAM_ARG const TimerState& state) {
+    Action discarded;
+    while (timer_context.action_queue.try_dequeue(discarded)) {
+    }
+    uint64_t raw = duration_to_ticks(std::chrono::high_resolution_clock::now() - start_time);
+    clock_offset.store((int64_t)raw - (int64_t)state.now, std::memory_order_relaxed);
+    ostime_offset = state.ostime_offset;
+    timer_context.active_timers.clear();
+    timer_context.firing_order.clear();
+    for (PTR(OSTimer) t_ : state.active) {
+        OSTimer* t = TO_PTR(OSTimer, t_);
+        ActiveTimer act{ t->timestamp, t->interval, t->mq, t->msg };
+        timer_context.active_timers[t_] = act;
+        timer_context.firing_order.insert({ act.timestamp, t_ });
+    }
+    // Poke the action queue with a no-op remove of NULLPTR so a blocked wait_dequeue_timed wakes and re-reads firing_order.
+    timer_context.action_queue.enqueue(RemoveTimerAction{ NULLPTR });
 }
 
 void ultramodern::init_timers(RDRAM_ARG1) {

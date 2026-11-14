@@ -551,6 +551,9 @@ void request_screenshot();
 int screenshot_state(); // 0 none, 1 being written, 2 written, 3 failed
 const char* screenshot_name();      // the last one's name, without _top.bmp etc.
 
+void show_top_notice(const char* text, uint32_t duration_ms = 6000);
+void show_top_notice_rgba(const uint16_t* rgba4, int w, int h, uint32_t duration_ms = 6000);
+
 }   // namespace rt64_3ds
 
 #endif

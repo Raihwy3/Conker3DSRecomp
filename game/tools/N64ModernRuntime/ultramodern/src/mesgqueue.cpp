@@ -5,6 +5,7 @@
 
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
+#include "ultramodern/save_states.hpp"
 
 struct QueuedMessage {
     PTR(OSMesgQueue) mq;
@@ -68,6 +69,16 @@ void ultramodern::enqueue_external_message(PTR(OSMesgQueue) mq, OSMesg msg, bool
 }
 
 bool do_send(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, bool jam, bool block);
+
+size_t ultramodern::save_states::external_message_count() {
+    return external_messages.size_approx();
+}
+
+void ultramodern::save_states::drop_external_messages() {
+    QueuedMessage dropped;
+    while (external_messages.try_dequeue(dropped)) {
+    }
+}
 
 void dequeue_external_messages(RDRAM_ARG1) {
     QueuedMessage to_send;
@@ -161,6 +172,7 @@ bool do_send(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, bool jam, bool block) {
             DBG_COUNT(7);
             debug_printf("[Message Queue] Thread %d is blocked on send\n", TO_PTR(OSThread, ultramodern::this_thread())->id);
             ultramodern::thread_queue_insert(PASS_RDRAM GET_MEMBER(OSMesgQueue, mq_, blocked_on_send), ultramodern::this_thread());
+            ultramodern::save_states::note_wait(ultramodern::save_states::WaitKind::Send, (uint32_t)mq_, (uint32_t)msg, 0);
             ultramodern::run_next_thread_and_wait(PASS_RDRAM1);
         }
     }
@@ -200,6 +212,7 @@ bool do_recv(RDRAM_ARG PTR(OSMesgQueue) mq_, PTR(OSMesg) msg_, bool block) {
             DBG_COUNT(6);
             debug_printf("[Message Queue] Thread %d is blocked on receive\n", TO_PTR(OSThread, ultramodern::this_thread())->id);
             ultramodern::thread_queue_insert(PASS_RDRAM GET_MEMBER(OSMesgQueue, mq_, blocked_on_recv), ultramodern::this_thread());
+            ultramodern::save_states::note_wait(ultramodern::save_states::WaitKind::Receive, (uint32_t)mq_, (uint32_t)msg_, 1);
             ultramodern::run_next_thread_and_wait(PASS_RDRAM1);
         }
     }
@@ -271,6 +284,9 @@ extern "C" s32 osRecvMesg(RDRAM_ARG PTR(OSMesgQueue) mq_, PTR(OSMesg) msg_, s32 
     
     // Handle any messages that have been received from an external thread.
     dequeue_external_messages(PASS_RDRAM1);
+
+    // A safe point for save states (save_states.hpp), if no other thread is ready to run.
+    ultramodern::save_states::on_receive(PASS_RDRAM mq_, msg_, flags);
 
     // Try to receive a message.
     bool received = do_recv(PASS_RDRAM mq_, msg_, flags == OS_MESG_BLOCK);

@@ -1,4 +1,5 @@
 #include "ultramodern/ultramodern.hpp"
+#include "ultramodern/save_states.hpp"
 
 void ultramodern::schedule_running_thread(RDRAM_ARG PTR(OSThread) t_) {
     debug_printf("[Scheduling] Adding thread %d to the running queue\n", TO_PTR(OSThread, t_)->id);
@@ -31,6 +32,9 @@ void ultramodern::check_running_queue(RDRAM_ARG1) {
 
 extern "C" void pause_self(RDRAM_ARG1) {
     while (true) {
+        // The idle thread runs only while every other game thread waits: the moment save states are
+        // taken and loaded at (save_states.hpp).
+        ultramodern::save_states::on_idle(PASS_RDRAM1);
         // Wait until an external message arrives, then allow the next thread to run.
         ultramodern::wait_for_external_message(PASS_RDRAM1);
         ultramodern::check_running_queue(PASS_RDRAM1);

@@ -10,6 +10,7 @@
 #include "native_update_http.h"
 #include "native_update_ca.h"
 static PrintConsole *top_screen,*bottom_screen;
+static int cia_mode;
 static struct {
     int download,cancel,done,ok;
     unsigned received,total;
@@ -27,7 +28,7 @@ static void worker(void *p){
             if(job.download){url=job.release.url;t.file=job.file;t.expected=job.release.bytes;t.digest=job.release.digest;}
             else {t.memory=job.metadata;t.capacity=sizeof job.metadata;}
             job.ok=native_update_http(url,&t,native_update_ca,sizeof native_update_ca-1,job.error,sizeof job.error);
-            if(job.ok && !job.download)job.ok=native_update_release(job.metadata,t.length,NATIVE_RELEASE_TAG,&job.release);
+            if(job.ok && !job.download)job.ok=native_update_release_for(job.metadata,t.length,NATIVE_RELEASE_TAG,cia_mode,&job.release);
             socExit();
         }
         free(buffer);
@@ -80,17 +81,26 @@ static int stage_progress(size_t n,size_t total){
 }
 int conker_update_startup(PrintConsole *top,PrintConsole *bottom){
     const char *directory="sdmc:/3ds/ConkerRecomp";
-    top_screen=top;bottom_screen=bottom;char error[160]={0},path[640];
+    top_screen=top;bottom_screen=bottom;cia_mode=!envIsHomebrew();char error[160]={0},path[640];
     if(!native_update_recover(directory,error,sizeof error))return prompt("UPDATE RECOVERY",error,"A: Continue  B: Exit")>0;
     // A repository must be explicitly configured by the maintainer.
     if(!NATIVE_UPDATE_REPOSITORY[0])return 1;
     snprintf(path,sizeof path,"%s/no-update-check.flag",directory);if(!access(path,F_OK))return 1;
     u32 wifi=0;if(R_FAILED(acInit()))return 1;Result rc=ACU_GetWifiStatus(&wifi);acExit();if(R_FAILED(rc)||!wifi)return 1;
     if(!transfer(0))return aptMainLoop();
-    int choice=prompt("NEW RELEASE AVAILABLE","Install this launcher update?\n\n   ROMs, saves and settings are kept.","A: Install  B: Not now");
+    int choice=prompt("NEW RELEASE AVAILABLE",cia_mode?"Download the CIA update? Install it with FBI after closing the game.":"Install this launcher update?\n\n   ROMs, saves and settings are kept.",cia_mode?"A: Download  B: Not now":"A: Install  B: Not now");
     if(choice<=0)return choice<0;
-    snprintf(job.file,sizeof job.file,"%s/launcher-update.zip.part",directory);
+    snprintf(job.file,sizeof job.file,"%s/launcher-update.%s.part",directory,cia_mode?"cia":"zip");
     if(!transfer(1))return aptMainLoop() && prompt("UPDATE NOT INSTALLED","The current launcher is unchanged.","A: Play  B: Exit")>0;
+    if(cia_mode){
+        if(!native_update_validate_cia(job.file,error,sizeof error)){
+            remove(job.file);return prompt("UPDATE NOT SAVED",error,"A: Play  B: Exit")>0;
+        }
+        snprintf(path,sizeof path,"%s/launcher-update.cia",directory);
+        // Keep an older download if staging or verification failed.
+        if(rename(job.file,path))return prompt("UPDATE NOT SAVED","Unable to save the CIA on the SD card.","A: Play  B: Exit")>0;
+        return prompt("CIA UPDATE READY","Close the game. In FBI, install /3ds/ConkerRecomp/launcher-update.cia. Saves and settings stay in place.","A: Exit  B: Play")<0;
+    }
     snprintf(path,sizeof path,"%s/launcher-update.zip",directory);remove(path);
     if(rename(job.file,path) || !native_update_install(path,directory,stage_progress,error,sizeof error))return prompt("UPDATE NOT INSTALLED",error[0]?error:"Unable to save update.","A: Play  B: Exit")>0;
     return prompt("UPDATE INSTALLED","Relaunch to use the new version.","A: Exit  B: Play")<0;

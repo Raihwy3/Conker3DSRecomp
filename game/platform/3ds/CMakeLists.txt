@@ -52,6 +52,8 @@ add_executable(ConkerRecomp
     "${CONKER_ROOT}/host/src/render_fixes.cpp"
     "${CONKER_ROOT}/host/src/look_aim.cpp"
     "${CONKER_ROOT}/host/src/mouse_camera.cpp"
+    "${CONKER_ROOT}/host/src/local_achievements.cpp"
+    "${CONKER_ROOT}/host/src/save_states.cpp"
     conker_audio_hle.cpp
     conker_mp3_native.cpp
     conker_mp3_bus.cpp

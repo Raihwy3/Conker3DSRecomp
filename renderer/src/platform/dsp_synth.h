@@ -80,6 +80,7 @@ bool dsp_synth_init(const SynthDesc& desc);
 // The settings menu's Audio engine row: true plays the game's voices on the
 // DSP (and skips its audio task), false runs the task as before.
 void dsp_synth_set_enabled(bool on);
+void dsp_synth_reset();
 bool dsp_synth_enabled();
 bool dsp_synth_cpu_stream();
 void dsp_synth_shutdown();

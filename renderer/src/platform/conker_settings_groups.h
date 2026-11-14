@@ -1,14 +1,20 @@
 // Conker's settings hierarchy. Saved keys and values remain in the shared runtime.
-enum ConkerSection { CRoot, CGraphics, CDisplay, CStereo, CEffects,
+enum ConkerSection { CRoot, CGraphics, CDisplay, CStereo, CEffects, CAppearance,
     CControls, CPresets, CSticks, CCamera, CAiming, CGyro, CTouch, CButtons,
-    CAudio, COutput, CInterface, CAppearance, CDiagnostics, CMisc, CSectionCount };
+    CAudio, COutput,
+    CAchievements,
+    CMisc, CExtras, CDiagnostics, CSaveStates, CSectionCount };
 struct ConkerGroup { int parent; const char* title; };
 constexpr ConkerGroup kConkerGroups[CSectionCount]={
-    {-1,"Categories"},{CRoot,"Graphics"},{CGraphics,"Display"},{CGraphics,"Stereoscopic 3D"},{CGraphics,"Image effects"},
+    {-1,"Categories"},{CRoot,"Graphics"},{CGraphics,"Display"},{CGraphics,"Stereoscopic 3D"},{CGraphics,"Image effects"},{CGraphics,"Appearance"},
     {CRoot,"Controls"},{CControls,"Presets"},{CControls,"Sticks"},{CControls,"Camera"},{CControls,"Aiming"},{CControls,"Gyro"},{CControls,"Touchscreen"},{CControls,"Button mapping"},
-    {CRoot,"Audio"},{CAudio,"Output"},{CRoot,"Interface"},{CInterface,"Appearance"},{CInterface,"Diagnostics"},{CRoot,"Misc"}};
+    {CRoot,"Audio"},{CAudio,"Output"},
+    {CRoot,"Achievements"},
+    {CRoot,"Misc"},{CMisc,"Extras"},{CExtras,"Diagnostics"},{CMisc,"Save states"}};
 int conker_section_for(const char* key,int page) {
-    if(!strncmp(key,"misc_",5))return CMisc;
+    if(!strncmp(key,"misc_state_",11))return CSaveStates;
+    if(!strncmp(key,"ach_",4))return CAchievements;
+    if(!strncmp(key,"misc_",5))return CExtras;
     if(!strcmp(key,"control_preset"))return CPresets;
     if(!strncmp(key,"bottom_",7))return CAppearance;
     if(!strncmp(key,"gyro_",5) || !strncmp(key,"look_gyro_",10))return CGyro;

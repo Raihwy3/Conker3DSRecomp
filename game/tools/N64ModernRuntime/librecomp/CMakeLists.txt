@@ -28,6 +28,7 @@ add_library(librecomp STATIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/print.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/recomp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/rsp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/save_states.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/sp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ultra_stubs.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ultra_translation.cpp"

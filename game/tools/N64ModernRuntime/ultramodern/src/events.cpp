@@ -21,6 +21,7 @@
 struct RspShadow { uint32_t base; uint32_t size; const uint8_t* data; };
 extern thread_local RspShadow rsp_shadow;
 #include "ultramodern/renderer_context.hpp"
+#include "ultramodern/save_states.hpp"
 
 static ultramodern::events::callbacks_t events_callbacks{};
 
@@ -191,14 +192,15 @@ void set_dummy_vi(bool odd);
 
 extern "C" volatile uint32_t ultramodern_dbg_counts[8];   // mesgqueue.cpp
 
+// The VIs left until the next retrace message (the VI thread's; saved in save states).
+static std::atomic_int remaining_retraces = 1;
+
 void vi_thread_func() {
     ultramodern::set_native_thread_name("VI Thread");
     // This thread should be prioritized over every other thread in the application, as it's what allows
     // the game to generate new audio and gfx lists.
     ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::Critical);
     using namespace std::chrono_literals;
-
-    int remaining_retraces = 1;
 
     while (!exited) {
         ultramodern_dbg_counts[4] = ultramodern_dbg_counts[4] + 1;
@@ -248,7 +250,7 @@ void vi_thread_func() {
             
             std::lock_guard lock{ events_context.message_mutex };
             ViState* cur_state = events_context.vi.get_cur_state();
-            if (remaining_retraces == 0) {
+            if (remaining_retraces <= 0) {
                 if (cur_state->mq != NULLPTR) {
                     // Send a message to the VI queue, and do not set it to be requeued if the queue was full.
                     // The worst case scenario is that the game misses a VI message and has to wait a little longer for the next. 
@@ -295,6 +297,7 @@ void ultramodern::renderer::report_list_drawn() {
     }
     list_drawn_reported = true;
     dp_complete();
+    ultramodern::save_states::task_finished();
 }
 
 // Asynchronous audio tasks (see ultramodern.hpp). The game hears that such a
@@ -352,6 +355,7 @@ void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_r
                 ULTRAMODERN_QUICK_EXIT();
             }
             ultramodern::flush_audio_buffers(PASS_RDRAM ++audio_completed);
+            ultramodern::save_states::task_finished();
             continue;
         }
 
@@ -362,6 +366,7 @@ void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_r
 
         // Tell the game that the RSP has completed
         sp_complete();
+        ultramodern::save_states::task_finished();
     }
 }
 
@@ -635,6 +640,9 @@ extern "C" PTR(void) osViGetCurrentFramebuffer() {
 void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
     OSTask* task = TO_PTR(OSTask, task_);
 
+    // Counted until its last message is sent, for save states (save_states.hpp).
+    ultramodern::save_states::task_submitted();
+
     // Send gfx tasks to the graphics action queue. The RSP's part of the task is reported complete here and now: the
     // graphics thread used to send that message when it took the list, which is only after the previous list's renderer
     // work, and with a renderer that takes a list for tens of milliseconds (rt64-3ds on a 3DS) the game's scheduler saw
@@ -663,6 +671,57 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
     }
     // Set all other tasks as the RSP task
     events_context.sp_task_queue.enqueue(task);
+}
+
+// --- Save states (save_states.hpp) ---
+
+ultramodern::save_states::EventState ultramodern::save_states::get_event_state(RDRAM_ARG1) {
+    std::lock_guard lock{ events_context.message_mutex };
+    EventState out{};
+    for (int i = 0; i < 2; i++) {
+        const ViState& vi = events_context.vi.states[i];
+        // The mode is in game memory (osViSetMode's), or the dummy mode before the game starts.
+        const uint8_t* mode = reinterpret_cast<const uint8_t*>(vi.mode);
+        out.vi[i].mode = (vi.mode == nullptr || vi.mode == &dummy_mode) ? NULLPTR : (PTR(OSViMode))(int32_t)(mode - rdram + 0x80000000u);
+        out.vi[i].framebuffer = vi.framebuffer;
+        out.vi[i].mq = vi.mq;
+        out.vi[i].msg = vi.msg;
+        out.vi[i].state = vi.state;
+        out.vi[i].control = vi.control;
+        out.vi[i].retrace_count = vi.retrace_count;
+    }
+    out.vi_cur_state = events_context.vi.cur_state;
+    out.vi_field = events_context.vi.field;
+    out.remaining_retraces = remaining_retraces;
+    out.sp_mq = events_context.sp.mq; out.sp_msg = events_context.sp.msg;
+    out.dp_mq = events_context.dp.mq; out.dp_msg = events_context.dp.msg;
+    out.ai_mq = events_context.ai.mq; out.ai_msg = events_context.ai.msg;
+    out.si_mq = events_context.si.mq; out.si_msg = events_context.si.msg;
+    return out;
+}
+
+void ultramodern::save_states::set_event_state(RDRAM_ARG const EventState& state) {
+    std::lock_guard lock{ events_context.message_mutex };
+    for (int i = 0; i < 2; i++) {
+        ViState& vi = events_context.vi.states[i];
+        // Without a mode (a state taken before the game set one), the one there is kept.
+        if (state.vi[i].mode != NULLPTR) {
+            vi.mode = TO_PTR(OSViMode, state.vi[i].mode);
+        }
+        vi.framebuffer = state.vi[i].framebuffer;
+        vi.mq = state.vi[i].mq;
+        vi.msg = state.vi[i].msg;
+        vi.state = state.vi[i].state;
+        vi.control = state.vi[i].control;
+        vi.retrace_count = state.vi[i].retrace_count;
+    }
+    events_context.vi.cur_state = state.vi_cur_state & 1;
+    events_context.vi.field = state.vi_field & 1;
+    remaining_retraces = state.remaining_retraces > 0 ? state.remaining_retraces : 1;
+    events_context.sp.mq = state.sp_mq; events_context.sp.msg = state.sp_msg;
+    events_context.dp.mq = state.dp_mq; events_context.dp.msg = state.dp_msg;
+    events_context.ai.mq = state.ai_mq; events_context.ai.msg = state.ai_msg;
+    events_context.si.mq = state.si_mq; events_context.si.msg = state.si_msg;
 }
 
 void ultramodern::send_si_message() {

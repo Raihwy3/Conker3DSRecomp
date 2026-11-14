@@ -25,6 +25,23 @@ def main():
             {'name':'conker-3ds-recomp.zip','size':100,'digest':'sha256:'+'a'*64,'browser_download_url':'https://github.com/test-owner/conker-test/releases/download/v0.9.5/conker-3ds-recomp.zip'}]}
         def parse(d,ok):fixture.write_text(json.dumps(d));return run('release',fixture,'v0.9.4-r1',ok=ok)
         assert parse(release,True).splitlines()[0]=='v0.9.5'
+        mixed=copy.deepcopy(release)
+        cia=copy.deepcopy(mixed['assets'][1]);cia['name']='conker-3ds-recomp-v0.9.5.cia';cia['browser_download_url']='https://github.com/test-owner/conker-test/releases/download/v0.9.5/'+cia['name'];mixed['assets'].insert(0,cia)
+        fixture.write_text(json.dumps(mixed));assert run('release-cia',fixture,'v0.9.4').splitlines()[1].endswith('.cia')
+        assert run('release',fixture,'v0.9.4').splitlines()[1].endswith('.zip')
+        fixture.write_text(json.dumps(release));run('release-cia',fixture,'v0.9.4',ok=False)
+        for name in ('source-conker-3ds-recomp.cia','conker-3ds-recomp/other.cia','conker-3ds-recomp%2Fother.cia'):
+            bad=copy.deepcopy(mixed);bad['assets']=bad['assets'][:1];bad['assets'][0]['name']=name;bad['assets'][0]['browser_download_url']='https://github.com/test-owner/conker-test/releases/download/v0.9.5/'+name
+            fixture.write_text(json.dumps(bad));run('release-cia',fixture,'v0.9.4',ok=False)
+        # Minimal synthetic CIA container: expected title, bounded content.
+        align=lambda x:(x+63)&~63
+        cia_file=tmp/'title.cia';header=0x2020;cert=ticket=tmd=64;at=align(header)+cert+ticket+tmd
+        container=bytearray(at+0x200);struct.pack_into('<IHHIIIIQ',container,0,header,0,0,cert,ticket,tmd,0,0x200)
+        container[at+0x100:at+0x104]=b'NCCH';struct.pack_into('<Q',container,at+0x118,0x000400000E0CBF00)
+        cia_file.write_bytes(container);run('cia',cia_file)
+        struct.pack_into('<Q',container,at+0x118,0x000400000E064D00);cia_file.write_bytes(container);run('cia',cia_file,ok=False)
+        struct.pack_into('<Q',container,24,2**63);cia_file.write_bytes(container);run('cia',cia_file,ok=False)
+        cia_file.write_bytes(b'bad');run('cia',cia_file,ok=False)
         for key in ('draft','prerelease'):
             bad=copy.deepcopy(release);bad[key]=True;parse(bad,False)
         for key,value in [('digest','sha256:bad'),('size',999999999),('browser_download_url','http://github.com/evil.zip'),('browser_download_url','https://github.com/other/repo/releases/download/v0.9.5/conker-3ds-recomp.zip')]:
@@ -92,5 +109,5 @@ def main():
             run('fetch',url.replace('localhost','127.0.0.1')+'/metadata',cert,'-',0,'-',ok=False)
             run('fetch',url+'/zip',cert,part,len(zip_bytes),digest,ok=False,cancel=True);assert not part.exists()
         finally:server.shutdown();server.server_close();thread.join()
-    print('PASS updater: revisions, GitHub asset selection, verified TLS, HTTPS-only redirects, SHA-256/size rejection, ZIP validation, cancellation, four replacement failures, recovery and preserved game files')
+    print('PASS updater: revisions, separate CIA/ZIP asset selection, CIA title/container checks, verified TLS, HTTPS-only redirects, SHA-256/size rejection, ZIP validation, cancellation, four replacement failures, recovery and preserved game files')
 if __name__=='__main__':main()

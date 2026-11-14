@@ -299,6 +299,13 @@ void recomp3ds::screen_conker_update() {
     }
 }
 void recomp3ds::screen_conker_section_title(const char* title) { snprintf(g_conker_section_title,sizeof(g_conker_section_title),"%s",title);g_screen_dirty=true; }
+void recomp3ds::screen_conker_set_subnote(const char* text) {
+    const char* s = text ? text : "";
+    if (strncmp(g_conker_subnote, s, sizeof(g_conker_subnote) - 1) != 0) {
+        snprintf(g_conker_subnote, sizeof(g_conker_subnote), "%s", s);
+        g_screen_dirty = true;
+    }
+}
 
 void recomp3ds::screen_init(PrintConsole* console) {
     LightLock_Init(&g_screen_lock);
@@ -322,6 +329,16 @@ void recomp3ds::screen_init(PrintConsole* console) {
 
 void recomp3ds::screen_conker_quit_prompt(bool show,bool restarts) {
     g_conker_quit_prompt=show;g_conker_quit_restarts=restarts;g_screen_dirty=true;
+}
+
+void recomp3ds::show_top_notice(const char* text, uint32_t duration_ms) {
+    static uint16_t toast_buf[184 * 34];
+    int tw = 0, th = 0;
+    if (render_conker_toast_rgba4(text, toast_buf, tw, th)) {
+        rt64_3ds::show_top_notice_rgba(toast_buf, tw, th, duration_ms);
+    } else {
+        rt64_3ds::show_top_notice(text, duration_ms);
+    }
 }
 
 void recomp3ds::screen_bottom_update(bool hud) {
@@ -383,8 +400,12 @@ void recomp3ds::screen_printf(const char* fmt, ...) {
     if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
     LightLock_Lock(&g_screen_lock);
     record_game_text(buf,(size_t)n);
-    if (!screen_conker_theme()) g_screen->write_r(_REENT, nullptr, buf, (size_t)n);
-    g_screen_dirty = true;
+    if (!screen_conker_theme()) {
+        g_screen->write_r(_REENT, nullptr, buf, (size_t)n);
+        g_screen_dirty = true;
+    } else if (g_text_y > 1 || settings_perf_monitor()) {
+        g_screen_dirty = true;
+    }
     LightLock_Unlock(&g_screen_lock);
     if (g_on_shadow) rt64_3ds::note_bottom_console_changed();
 }
@@ -429,15 +450,11 @@ void recomp3ds::screen_flush() {
     const u32 bytes = (u32)w * h * gspGetBytesPerPixel(gfxGetScreenFormat(GFX_BOTTOM));
     if (screen_conker_theme()) {
         LightLock_Lock(&g_screen_lock);
-        compose_conker_panel(g_theme_output);
-        // Present the completed RGB565 image, then flush and swap the LCD buffer.
-        volatile uint16_t* lcd=(volatile uint16_t*)fb;
-        for(size_t i=0;i<320*240;++i)lcd[i]=g_theme_output[i];
+        compose_conker_panel((uint16_t*)fb);
         LightLock_Unlock(&g_screen_lock);
     }
     svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)fb, bytes);
     if (screen_conker_theme()) {
-        GSPGPU_FlushDataCache(fb,bytes);
         gfxScreenSwapBuffers(GFX_BOTTOM,false);
     }
 }

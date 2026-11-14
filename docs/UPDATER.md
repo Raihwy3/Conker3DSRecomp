@@ -8,7 +8,7 @@ With Wi-Fi connected, startup checks that repository’s latest public GitHub Re
 
 Downloads use HTTPS with certificate and hostname verification. The expected size and SHA-256 digest come from GitHub’s asset metadata; ZIP CRCs and launcher headers are also checked. The ZIP is streamed to the SD card, not held in RAM. Limits are 32 MiB for the ZIP and 64 MiB for the uncompressed launcher.
 
-Only `ConkerRecomp.3dsx` and `ConkerRecomp.smdh` are installed. ROMs, saves and settings are kept. Temporary files, backups and a recovery journal protect file replacement; startup attempts recovery before checking for updates. The installed build runs after relaunching. Recovery also runs when network checks are disabled.
+For Homebrew Launcher, only `ConkerRecomp.3dsx` and `ConkerRecomp.smdh` are installed. ROMs, saves and settings are kept. Temporary files, backups and a recovery journal protect file replacement; startup attempts recovery before checking for updates. The installed build runs after relaunching. Recovery also runs when network checks are disabled.
 
 ## Publish an update
 
@@ -19,3 +19,7 @@ Only `ConkerRecomp.3dsx` and `ConkerRecomp.smdh` are installed. ROMs, saves and 
 The updater selects `conker-3ds-recomp*.zip`, never the source archive. Keep the install layout `3ds/ConkerRecomp/ConkerRecomp.3dsx` plus its `.smdh`. GitHub must provide the asset’s `sha256:` digest. Equal, older, draft and prerelease versions are ignored. Do not reuse a tag for different update content.
 
 Real Wi-Fi download and installation on a 3DS still need testing for this port. Host tests cover the shared parser, HTTPS transport, integrity checks and recovery, not the console network stack.
+
+## Installed CIA version
+
+Installed titles select a separate `.cia` release asset and save it as `/3ds/ConkerRecomp/launcher-update.cia` after verification. Close the game and install that file with FBI. This does not replace the SD-card `.3dsx`. See [CIA build and updates](CIA.md).

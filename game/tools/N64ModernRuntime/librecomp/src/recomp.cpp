@@ -20,6 +20,7 @@
 #include "librecomp/game.hpp"
 #include "xxHash/xxh3.h"
 #include "ultramodern/ultramodern.hpp"
+#include "ultramodern/save_states.hpp"
 #include "ultramodern/error_handling.hpp"
 #include "librecomp/addresses.hpp"
 #include "librecomp/mods.hpp"
@@ -566,7 +567,9 @@ void run_thread_function(uint8_t* rdram, uint64_t addr, uint64_t sp, uint64_t ar
     }
 
     recomp_func_t* func = get_function(addr);
+    ultramodern::save_states::set_thread_game_context(&ctx);
     func(rdram, &ctx);
+    ultramodern::save_states::set_thread_game_context(nullptr);
 }
 
 void init(uint8_t* rdram, recomp_context* ctx, gpr entrypoint) {

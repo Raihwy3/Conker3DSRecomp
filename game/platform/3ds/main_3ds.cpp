@@ -16,6 +16,7 @@ extern "C" {
 #include <SDL.h>
 
 #include "recomp3ds.h"
+#include "recomp3ds_internal.h"
 #include "librecomp/rsp.hpp"
 #include "librecomp/overlays.hpp"
 #include "librecomp/game.hpp"
@@ -28,10 +29,21 @@ extern "C" {
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 RspExitReason conker_audio_ucode(uint8_t* rdram, uint32_t ucode_addr);
 
-static std::atomic<bool> g_free_camera{false};
-extern "C" bool conker_3ds_free_camera_enabled() { return g_free_camera.load(); }
+static std::atomic<bool> g_free_camera{true};
+extern "C" bool conker_3ds_free_camera_enabled() {
+    return g_free_camera.load();
+}
+namespace { void refresh_achievement_labels(); }
+void conker::notices::show(const std::string& text, bool replace) {
+    (void)replace;
+    if (text.rfind("Achievement unlocked: ", 0) == 0) {
+        recomp3ds::audio_play_chime();
+    }
+    recomp3ds::show_top_notice(text.c_str(), 6000);
+    refresh_achievement_labels();
+}
 
-extern "C" void conker_stat_change(uint8_t*, recomp_context*) {}
+
 
 // 400x240 top screen window handle for widescreen.cpp's SDL_GetWindowSize.
 static SDL_Window dummy_window{};
@@ -77,6 +89,9 @@ const MenuDefault kDefaults[] = {
     { "cstick_deadzone", 20 },
     { "frame_cap", 2 },
     { "perf_monitor", 0 },
+    { "log_level", 0 },
+    { "free_camera", 1 },
+    { "aim_swap_sticks", 0 },
 };
 
 int g_touch_mode = 1;
@@ -84,11 +99,11 @@ int g_face_camera_value=0;
 const char* const kFaceCameraNames[]={"Off","On"};
 void apply_face_camera(int v){recomp3ds::input_set_face_camera(v!=0);}
 int g_options_button = 1;
-int g_animated_tails=0,g_health_display=1,g_money_display=1;
-int g_lives_display=0,g_chapter_display=1,g_gfx_text=1;
+int g_animated_tails=1,g_health_display=1,g_money_display=1;
+int g_lives_display=1,g_chapter_display=1,g_gfx_text=0;
 const char* const kLivesDisplay[]={"Full","Icons only","Hidden"};
 const char* const kOptionsButtonNames[] = { "Off", "On" };
-int g_free_camera_value = 0;
+int g_free_camera_value = 1;
 const char* const kFreeCameraNames[] = { "Original", "Free orbit" };
 void apply_free_camera(int v) { g_free_camera.store(v!=0); }
 const char* const kTouchModes[] = { "Movement", "Look" };
@@ -110,10 +125,16 @@ int value_look_stick_invert=2;
 void apply_look_stick_invert(int v){conker3ds::set("look_stick_invert",v);}
 int value_aim_swap_sticks=0;
 void apply_aim_swap_sticks(int v){conker3ds::set("aim_swap_sticks",v);}
-int value_aim_lock_on=1;
+int value_aim_lock_on=0;
 void apply_aim_lock_on(int v){conker3ds::set("aim_lock_on",v);}
-int value_aim_reticle=0;
+int value_aim_reticle=5;
 void apply_aim_reticle(int v){conker3ds::set("aim_reticle",v);}
+int value_aim_reticle_color=1;
+void apply_aim_reticle_color(int v){conker3ds::set("aim_reticle_color",v);}
+int value_aim_reticle_opacity=40;
+void apply_aim_reticle_opacity(int v){conker3ds::set("aim_reticle_opacity",v);}
+const char* const kReticleShapes[]={"Off","Dot","Cross","Cross + dot","Circle","Circle + dot","T-shape","Diamond"};
+const char* const kReticleColors[]={"White","Green","Amber","Red","Blue","Violet"};
 int value_gyro_enabled=0;
 void apply_gyro_enabled(int v){conker3ds::set("gyro_enabled",v);recomp3ds::input_set_gyro(v!=0);}
 int value_gyro_sensitivity=100;
@@ -124,12 +145,124 @@ int value_look_gyro_invert=0;
 void apply_look_gyro_invert(int v){conker3ds::set("look_gyro_invert",v);}
 int value_cutscene_4x3=0;
 void apply_cutscene_4x3(int v){conker3ds::set("cutscene_4x3",v);}
-int value_model_highest=0;
+int value_model_highest=1;
 void apply_model_highest(int v){conker3ds::set("model_highest",v);}
 int g_skip_intro=0;
 void apply_skip_intro(int v){conker3ds::set("misc_skip_intro",v);}
+
+int g_reset_options = 0;
+const char* const kResetOptionsNames[] = { "Press >", "Reset!" };
+void apply_reset_options(int v) {
+    if (v != 0) {
+        g_reset_options = 0;
+        recomp3ds::reset_all_options();
+        recomp3ds::screen_conker_set_subnote("All options reset to defaults.");
+    }
+}
+
+int g_reset_achievements = 0;
+const char* const kResetAchievementsNames[] = { "Press >", "Reset!" };
+void apply_reset_achievements(int v) {
+    if (v != 0) {
+        g_reset_achievements = 0;
+        conker::local_achievements::reset();
+        refresh_achievement_labels();
+        recomp3ds::screen_conker_set_subnote("All achievements cleared.");
+    }
+}
+
+int g_state_slot = 1;
+void apply_state_slot(int v) { conker::save_states::set_slot(v); }
+
+int g_state_save = 0;
+const char* const kSaveStateNames[] = { "Press >", "Saving..." };
+void apply_state_save(int v) {
+    if (v != 0) {
+        g_state_save = 0;
+        conker::save_states::save();
+        recomp3ds::settings_menu_toggle();
+    }
+}
+
+int g_state_load = 0;
+const char* const kLoadStateNames[] = { "Press >", "Loading..." };
+void apply_state_load(int v) {
+    if (v != 0) {
+        g_state_load = 0;
+        conker::save_states::load();
+        recomp3ds::settings_menu_toggle();
+    }
+}
+
+int g_ach_values[37]{};
+const char* g_ach_statuses[37]{
+    "LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED",
+    "LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED",
+    "LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED",
+    "LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED","LOCKED"
+};
+
+void refresh_achievement_labels() {
+    const int n = std::min<int>(37, (int)conker::local_achievements::count());
+    for (int i = 0; i < n; ++i) {
+        g_ach_statuses[i] = conker::local_achievements::is_unlocked(i) ? "UNLOCKED" : "LOCKED";
+    }
+}
+
+template <int Idx>
+void apply_achievement_row(int v) {
+    refresh_achievement_labels();
+    if (v < 0) {
+        recomp3ds::screen_conker_set_subnote("");
+        return;
+    }
+    recomp3ds::screen_conker_set_subnote(conker::local_achievements::description(Idx));
+}
+
 const MenuOption kOptions[] = {
     {"misc_skip_intro","Skip intro",0,1,&g_skip_intro,kOffOn,apply_skip_intro,PageGame},
+    {"misc_reset_options","Reset all options",0,1,&g_reset_options,kResetOptionsNames,apply_reset_options,PageGame},
+    {"misc_reset_achievements","Reset achievements",0,1,&g_reset_achievements,kResetAchievementsNames,apply_reset_achievements,PageGame},
+    {"misc_state_slot","Save state slot",1,9,&g_state_slot,nullptr,apply_state_slot,PageGame},
+    {"misc_state_save","Save state",0,1,&g_state_save,kSaveStateNames,apply_state_save,PageGame},
+    {"misc_state_load","Load state",0,1,&g_state_load,kLoadStateNames,apply_state_load,PageGame},
+    {"ach_00","Bad Fur Day",0,0,&g_ach_values[0],&g_ach_statuses[0],apply_achievement_row<0>,PageGame},
+    {"ach_01","Hair of the Squirrel",0,0,&g_ach_values[1],&g_ach_statuses[1],apply_achievement_row<1>,PageGame},
+    {"ach_02","Pan Handled",0,0,&g_ach_values[2],&g_ach_statuses[2],apply_achievement_row<2>,PageGame},
+    {"ach_03","Hive Got a Problem",0,0,&g_ach_values[3],&g_ach_statuses[3],apply_achievement_row<3>,PageGame},
+    {"ach_04","Dung Deal",0,0,&g_ach_values[4],&g_ach_statuses[4],apply_achievement_row<4>,PageGame},
+    {"ach_05","Gone With the Wind",0,0,&g_ach_values[5],&g_ach_statuses[5],apply_achievement_row<5>,PageGame},
+    {"ach_06","Cheese Please",0,0,&g_ach_values[6],&g_ach_statuses[6],apply_achievement_row<6>,PageGame},
+    {"ach_07","Petal Pusher",0,0,&g_ach_values[7],&g_ach_statuses[7],apply_achievement_row<7>,PageGame},
+    {"ach_08","Look Before You Leap",0,0,&g_ach_values[8],&g_ach_statuses[8],apply_achievement_row<8>,PageGame},
+    {"ach_09","Fork Off",0,0,&g_ach_values[9],&g_ach_statuses[9],apply_achievement_row<9>,PageGame},
+    {"ach_10","Bat Out of Hell",0,0,&g_ach_values[10],&g_ach_statuses[10],apply_achievement_row<10>,PageGame},
+    {"ach_11","Hay Fever",0,0,&g_ach_values[11],&g_ach_statuses[11],apply_achievement_row<11>,PageGame},
+    {"ach_12","Bale Out",0,0,&g_ach_values[12],&g_ach_statuses[12],apply_achievement_row<12>,PageGame},
+    {"ach_13","Something Fishy",0,0,&g_ach_values[13],&g_ach_statuses[13],apply_achievement_row<13>,PageGame},
+    {"ach_14","Clang Gang",0,0,&g_ach_values[14],&g_ach_statuses[14],apply_achievement_row<14>,PageGame},
+    {"ach_15","Belfry Bound",0,0,&g_ach_values[15],&g_ach_statuses[15],apply_achievement_row<15>,PageGame},
+    {"ach_16","Boiling Point",0,0,&g_ach_values[16],&g_ach_statuses[16],apply_achievement_row<16>,PageGame},
+    {"ach_17","Cabin Fever",0,0,&g_ach_values[17],&g_ach_statuses[17],apply_achievement_row<17>,PageGame},
+    {"ach_18","Opera Pooed",0,0,&g_ach_values[18],&g_ach_statuses[18],apply_achievement_row<18>,PageGame},
+    {"ach_19","Flushed Away",0,0,&g_ach_values[19],&g_ach_statuses[19],apply_achievement_row<19>,PageGame},
+    {"ach_20","Rock Bottom",0,0,&g_ach_values[20],&g_ach_statuses[20],apply_achievement_row<20>,PageGame},
+    {"ach_21","False Idol",0,0,&g_ach_values[21],&g_ach_statuses[21],apply_achievement_row<21>,PageGame},
+    {"ach_22","On the List",0,0,&g_ach_values[22],&g_ach_statuses[22],apply_achievement_row<22>,PageGame},
+    {"ach_23","Meet the Boss",0,0,&g_ach_values[23],&g_ach_statuses[23],apply_achievement_row<23>,PageGame},
+    {"ach_24","Hot Laps",0,0,&g_ach_values[24],&g_ach_statuses[24],apply_achievement_row<24>,PageGame},
+    {"ach_25","Things That Go Bump",0,0,&g_ach_values[25],&g_ach_statuses[25],apply_achievement_row<25>,PageGame},
+    {"ach_26","Fangs a Lot",0,0,&g_ach_values[26],&g_ach_statuses[26],apply_achievement_row<26>,PageGame},
+    {"ach_27","Undead Party",0,0,&g_ach_values[27],&g_ach_statuses[27],apply_achievement_row<27>,PageGame},
+    {"ach_28","Beach Party",0,0,&g_ach_values[28],&g_ach_statuses[28],apply_achievement_row<28>,PageGame},
+    {"ach_29","Rodent Rescue",0,0,&g_ach_values[29],&g_ach_statuses[29],apply_achievement_row<29>,PageGame},
+    {"ach_30","Tank You Very Much",0,0,&g_ach_values[30],&g_ach_statuses[30],apply_achievement_row<30>,PageGame},
+    {"ach_31","Last Line",0,0,&g_ach_values[31],&g_ach_statuses[31],apply_achievement_row<31>,PageGame},
+    {"ach_32","Heist Society",0,0,&g_ach_values[32],&g_ach_statuses[32],apply_achievement_row<32>,PageGame},
+    {"ach_33","Safe Cracker",0,0,&g_ach_values[33],&g_ach_statuses[33],apply_achievement_row<33>,PageGame},
+    {"ach_34","Chestburster",0,0,&g_ach_values[34],&g_ach_statuses[34],apply_achievement_row<34>,PageGame},
+    {"ach_35","What a Day",0,0,&g_ach_values[35],&g_ach_statuses[35],apply_achievement_row<35>,PageGame},
+    {"ach_36","Every Chapter",0,0,&g_ach_values[36],&g_ach_statuses[36],apply_achievement_row<36>,PageGame},
     {"face_camera","Face-button camera",0,1,&g_face_camera_value,kFaceCameraNames,apply_face_camera,PageControls},
     {"bottom_health","Chocolate health",0,1,&g_health_display,kOffOn,screen_conker_set_health_display,PageGame},
     {"bottom_money","Money display",0,1,&g_money_display,kOffOn,screen_conker_set_money_display,PageGame},
@@ -150,7 +283,9 @@ const MenuOption kOptions[] = {
     {"look_stick_invert","Aim inversion",0,3,&value_look_stick_invert,kInvert,apply_look_stick_invert,PageControls},
     {"aim_swap_sticks","Swap aim sticks",0,1,&value_aim_swap_sticks,kOffOn,apply_aim_swap_sticks,PageControls},
     {"aim_lock_on","Aim lock-on",0,1,&value_aim_lock_on,kOffOn,apply_aim_lock_on,PageControls},
-    {"aim_reticle","Aiming reticle",0,1,&value_aim_reticle,kOffOn,apply_aim_reticle,PageControls},
+    {"aim_reticle","Aiming reticle",0,7,&value_aim_reticle,kReticleShapes,apply_aim_reticle,PageControls},
+    {"aim_reticle_color","Reticle color",0,5,&value_aim_reticle_color,kReticleColors,apply_aim_reticle_color,PageControls},
+    {"aim_reticle_opacity","Reticle opacity",10,100,&value_aim_reticle_opacity,nullptr,apply_aim_reticle_opacity,PageControls,10,"%"},
     {"gyro_enabled","Gyro aiming",0,1,&value_gyro_enabled,kOffOn,apply_gyro_enabled,PageControls},
     {"gyro_sensitivity","Gyro sensitivity",0,400,&value_gyro_sensitivity,nullptr,apply_gyro_sensitivity,PageControls,5,"%"},
     {"look_gyro_response","Gyro response",0,1,&value_look_gyro_response,kResponse,apply_look_gyro_response,PageControls},
@@ -168,10 +303,7 @@ void on_thread_create(uint8_t*, recomp_context* ctx) {
     set_fr_mode(ctx);
 }
 
-static uint8_t* g_rdram = nullptr;
-
 void conker_on_init_3ds(uint8_t* rdram, recomp_context* ctx) {
-    g_rdram = rdram;
     recomp3ds::screen_conker_set_rdram(rdram);
     conker::register_tlb_mapped_code();
     conker::map_tlb_code_pages(rdram);
@@ -188,6 +320,10 @@ void conker_on_init_3ds(uint8_t* rdram, recomp_context* ctx) {
 
     constexpr int32_t osRunningThread = 0x8002BE00;
     ultramodern::set_running_thread_variable(osRunningThread);
+
+    conker::local_achievements::init();
+    conker::save_states::init();
+    refresh_achievement_labels();
 }
 
 void register_conker_overlays_and_exports() {
@@ -222,8 +358,11 @@ static int choose_rom() {
     struct stat st;
     for(int i=0;i<count;++i){char path[192];snprintf(path,sizeof(path),"sdmc:/3ds/ConkerRecomp/%s",choices[i].filename);
         present[i]=stat(path,&st)==0 && S_ISREG(st.st_mode);}
-    const bool any_translation=present[2] || present[3] || present[4];
+    bool any_translation=false;
+    for(int i=2;i<count;++i) if(present[i]) any_translation=true;
     bool translations=false;
+    int translation_page=0; // 0: FR/ES, 1: PT-BR/RU, 2: DE
+    const int total_translation_pages = (translation_count + 1) / 2; // 3 pages
     int selected=present[0]?0:present[1]?1:2;
     // libctru retains the selected console pointer beyond this function.
     static PrintConsole top{}, bottom{};
@@ -244,8 +383,12 @@ static int choose_rom() {
         hidScanInput();
         const u32 down = hidKeysDown();
         if (!(hidKeysHeld() & (KEY_A | KEY_START | KEY_B | KEY_TOUCH))) released = true;
-        if(released && (down & (KEY_UP|KEY_DOWN|KEY_LEFT|KEY_RIGHT))){
-            selected=wrap(selected,(down&(KEY_UP|KEY_LEFT))?-1:1);redraw=true;
+        if(released && (down & (KEY_UP|KEY_DOWN))){
+            selected=wrap(selected,(down&KEY_UP)?-1:1,3);redraw=true;
+        }
+        if(released && translations && (down & (KEY_LEFT|KEY_RIGHT))){
+            translation_page = wrap(translation_page, (down&KEY_LEFT)?-1:1, total_translation_pages);
+            redraw=true;
         }
         bool accept=released && (down&(KEY_A|KEY_START));
         if(released && (down&KEY_TOUCH)){
@@ -254,8 +397,16 @@ static int choose_rom() {
             if(row>=0){selected=row;redraw=true;accept=true;}
         }
         if(accept){
-            if(!translations && selected==2){translations=true;selected=0;redraw=true;}
-            else {const int index=rom_index(translations,selected);if(present[index]){result=index;break;}}
+            if(!translations && selected==2){translations=true;translation_page=0;selected=0;redraw=true;}
+            else if(translations && selected==2){
+                // Row 2 is "MORE TRANSLATIONS >" or page advance
+                translation_page = wrap(translation_page, 1, total_translation_pages);
+                redraw=true;
+            }
+            else {
+                const int index=rom_index(translations,selected,translation_page);
+                if(index<count && present[index]){result=index;break;}
+            }
         }
         if(released && (down&KEY_B)){
             if(translations){translations=false;selected=2;redraw=true;}
@@ -267,28 +418,59 @@ static int choose_rom() {
             view.stage=translations?"TRANSLATIONS":"SELECT VERSION";
             view.message="Pick a version below. Your ROM is checked before the game starts.";
             view.detail="SAVES AND SETTINGS ARE SHARED";
-            view.actions=translations?"A: START    B: BACK":"A: SELECT    B: EXIT";
+            view.actions=translations?"A: SELECT    B: BACK    < >: PAGE":"A: SELECT    B: EXIT";
             for(int row=0;row<3;++row){
-                const bool folder=!translations && row==2;
-                const int index=rom_index(translations,row);
-                view.labels[row]=folder?"TRANSLATIONS":choices[index].label;
-                view.available[row]=folder?any_translation:present[index];
-                view.notes[row]=folder?"ES FR PTBR":present[index]?choices[index].filename:"ROM NOT FOUND";
+                if(!translations){
+                    const bool folder=row==2;
+                    view.labels[row]=folder?"TRANSLATIONS":choices[row].label;
+                    view.available[row]=folder?any_translation:present[row];
+                    view.notes[row]=folder?"ES FR PTBR RU DE":present[row]?choices[row].filename:"ROM NOT FOUND";
+                } else {
+                    if(row<2){
+                        const int index=rom_index(true,row,translation_page);
+                        if(index<count){
+                            view.labels[row]=choices[index].label;
+                            view.available[row]=present[index];
+                            view.notes[row]=present[index]?choices[index].filename:"ROM NOT FOUND";
+                        } else {
+                            view.labels[row]="";
+                            view.available[row]=0;
+                            view.notes[row]="";
+                        }
+                    } else {
+                        // Row 2: Page toggle
+                        static char page_note[32];
+                        snprintf(page_note, sizeof(page_note), "PAGE %d OF %d  (TAP / A: NEXT)", translation_page+1, total_translation_pages);
+                        view.labels[row]="MORE TRANSLATIONS >";
+                        view.available[row]=1;
+                        view.notes[row]=page_note;
+                    }
+                }
             }
             if(conker_launcher_draw(&view)){redraw=false;gspWaitForVBlank();continue;}
             consoleSelect(&top); consoleClear();
             printf("\x1b[3;4HConker: 3DS Recomp\n\n   Choose your ROM version.\n\n   Files are checked before the game starts.\n\n   All versions share your saves and settings.");
-            if(translations)printf("\x1b[15;4HTranslations\n\n   CBFDfr.z64   - French\n   CBFDes.z64   - Spanish\n   CBFDptbr.z64 - Brazilian Portuguese");
+            if(translations)printf("\x1b[15;4HTranslations (Page %d/%d)\n\n   CBFDfr.z64   - French\n   CBFDes.z64   - Spanish\n   CBFDptbr.z64 - Portuguese\n   CBFDru.z64   - Russian\n   CBFDde.z64   - German", translation_page+1, total_translation_pages);
             consoleSelect(&bottom);consoleClear();
             printf("\x1b[3;3H%s",translations?"TRANSLATIONS":"SELECT VERSION");
             for(int row=0;row<3;++row){
-                const bool folder=!translations && row==2;
-                const int index=rom_index(translations,row);
-                const bool exists=folder?any_translation:present[index];
-                const char* label=folder?"Translations >":choices[index].label;
-                printf("\x1b[%d;3H%s %s%s",9+row*4,selected==row?">":" ",label,exists?"":" (missing)");
+                if(!translations){
+                    const bool folder=row==2;
+                    const bool exists=folder?any_translation:present[row];
+                    const char* label=folder?"Translations >":choices[row].label;
+                    printf("\x1b[%d;3H%s %s%s",9+row*4,selected==row?">":" ",label,exists?"":" (missing)");
+                } else {
+                    if(row<2){
+                        const int index=rom_index(true,row,translation_page);
+                        if(index<count){
+                            printf("\x1b[%d;3H%s %s%s",9+row*4,selected==row?">":" ",choices[index].label,present[index]?"":" (missing)");
+                        }
+                    } else {
+                        printf("\x1b[%d;3H%s More Translations > (Page %d/%d)",9+row*4,selected==row?">":" ",translation_page+1,total_translation_pages);
+                    }
+                }
             }
-            if(!translations)printf("\x1b[19;5HES FR PTBR");
+            if(!translations)printf("\x1b[19;5HES FR PTBR RU DE");
             printf("\x1b[24;3HD-pad: choose   A/START: launch\n\n  Touch to select. B: %s",translations?"back":"exit");
             redraw = false;
         }
@@ -316,9 +498,12 @@ int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
 
+    refresh_achievement_labels();
     recomp3ds::screen_set_conker_theme(true);
     recomp3ds::screen_conker_set_player_camera_query(conker::mouse_camera::normal_camera);
-    recomp3ds::input_set_right_stick_owner([] { return conker::look_aim::swap_sticks_now(0) || (conker_3ds_free_camera_enabled() && conker::mouse_camera::stick_turns_camera()); });
+    recomp3ds::input_set_right_stick_owner([] {
+        return conker::look_aim::swap_sticks_now(0) || (conker_3ds_free_camera_enabled() && conker::mouse_camera::stick_turns_camera());
+    });
     recomp3ds::input_set_transform([](uint16_t* b,float* x,float* y){
         if(!conker::look_aim::swap_sticks_now(0))return;
         const float move_x=*x,move_y=*y;
@@ -371,7 +556,7 @@ int main(int argc, char** argv) {
         .on_init_callback = conker_on_init_3ds,
     };
 
-    desc.rom_hint = "Use a US retail, Uncensored or translation ROM.\nFiles: CBFD.z64 / CBFDUncensored.z64\nCBFDfr.z64 / CBFDes.z64 / CBFDptbr.z64";
+    desc.rom_hint = "Use a US retail, Uncensored or translation ROM.\nFiles: CBFD.z64 / CBFDUncensored.z64\nCBFDfr.z64 / CBFDes.z64 / CBFDptbr.z64\nCBFDru.z64 / CBFDde.z64";
     desc.rsp.get_rsp_microcode = get_rsp_microcode;
     desc.register_overlays = register_conker_overlays_and_exports;
 

@@ -19,3 +19,5 @@ Outputs: `.local/workspace/build-3ds/ConkerRecomp.3dsx` and `.smdh`.
 Run `python3 tools/audit_source.py` before uploading source. `python3 tools/package.py` produces an install ZIP and a source ZIP in `.local/releases/`. Neither archive includes your ROM, generated source, saves, screenshots or test logs.
 
 To update vendored code, preserve its notices and update `docs/UPSTREAM.json`. Native fixes in this tree are part of the port; replacing it with an unmodified upstream checkout will lose them.
+
+For a standalone HOME Menu application, see [CIA build and updates](CIA.md).

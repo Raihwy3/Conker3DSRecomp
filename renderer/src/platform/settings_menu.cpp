@@ -103,12 +103,12 @@ struct Row {
     void* ctx;
     int def;                        // its default, before settings.ini (Reset controls)
 };
-constexpr int kMaxRows = 160;
+constexpr int kMaxRows = 224;
 Row g_rows[kMaxRows];
 int g_row_count = 0;
 #include "conker_settings_groups.h"
 int g_conker_section=CGraphics;
-constexpr int kConkerTabs[conker_menu::count]={CGraphics,CControls,CAudio,CInterface,CMisc};
+constexpr int kConkerTabs[conker_menu::count]={CGraphics,CControls,CAudio,CAchievements,CMisc};
 int conker_tab_index() {
     int node=g_conker_section;
     while(node>CRoot && kConkerGroups[node].parent>CRoot)node=kConkerGroups[node].parent;
@@ -350,13 +350,13 @@ void draw_row(int slot) {
     }
     recomp3ds::screen_printf("\x1b[%d;0H%s%s %-*.*s %-*.*s\x1b[0m", slot_line(slot), sel ? "\x1b[33m" : "", sel ? ">" : " ",
            lw, lw, label, vw, vw, val);
-    if (recomp3ds::screen_conker_theme()) recomp3ds::screen_printf("\x1b[33m< >\x1b[0m");
+    if (recomp3ds::screen_conker_theme() && strncmp(r.key, "ach_", 4) != 0) recomp3ds::screen_printf("\x1b[33m< >\x1b[0m");
 }
 
 void draw_tabs() {
     if(recomp3ds::screen_conker_theme()) {
         const int active=conker_tab_index();
-        recomp3ds::screen_conker_section_title(kConkerGroups[g_conker_section].parent>CRoot?kConkerGroups[g_conker_section].title:"");
+        recomp3ds::screen_conker_section_title((g_conker_section==CAchievements || kConkerGroups[g_conker_section].parent>CRoot)?kConkerGroups[g_conker_section].title:"");
         for(int i=0;i<conker_menu::count;++i)recomp3ds::screen_printf("\x1b[6;%dH%s%-8.8s\x1b[0m",i*8+1,i==active?"\x1b[33m":"",conker_menu::labels[i]);
         return;
     }
@@ -408,7 +408,28 @@ void draw_hint() {
     recomp3ds::screen_printf("\x1b[%d;0H%-40s", kHintRow, hint);
 }
 
+void update_conker_subnote() {
+    if (!recomp3ds::screen_conker_theme()) return;
+    if (g_conker_section == CAchievements) {
+        int idx[kMaxRows];
+        const int n = page_rows(g_page, idx);
+        if (g_sel >= 0 && g_sel < n) {
+            const Row& r = g_rows[idx[g_sel]];
+            if (r.on_change != nullptr) r.on_change(0);
+        } else if (n > 0 && g_rows[idx[0]].on_change != nullptr) {
+            g_rows[idx[0]].on_change(-1);
+        }
+    } else {
+        recomp3ds::screen_conker_set_subnote("");
+    }
+}
+
 void draw_page() {
+    if (recomp3ds::screen_conker_theme() && g_conker_section == CAchievements) {
+        int idx[kMaxRows];
+        const int n = page_rows(g_page, idx);
+        if (n > 0 && g_rows[idx[0]].on_change != nullptr) g_rows[idx[0]].on_change(-1);
+    }
     blank_rows(kFirstRow - 1, kLastRow);
     const int n = page_count(g_page);
     for (int s = 0; s < n; s++) draw_row(s);
@@ -417,6 +438,13 @@ void draw_page() {
     if(recomp3ds::screen_conker_theme()) {
         if(g_conker_section==CDisplay)recomp3ds::screen_printf("\x1b[%d;0HRestart: supersampling",kLastRow);
         if(g_conker_section==COutput)recomp3ds::screen_printf("\x1b[%d;0HRestart: DSP backend",kLastRow);
+        if(g_conker_section==CAchievements){
+            int idx[kMaxRows], unlocked=0;
+            const int cnt=page_rows(g_page, idx);
+            for(int i=0;i<cnt;++i)if(g_rows[idx[i]].names && !strcmp(g_rows[idx[i]].names[0],"UNLOCKED"))++unlocked;
+            recomp3ds::screen_printf("\x1b[%d;0HUnlocked: %d / %d",kLastRow,unlocked,cnt);
+        }
+        update_conker_subnote();
         return;
     }
     if (g_page == recomp3ds::Page3D) recomp3ds::screen_printf("\x1b[%d;0H3D slider: strength.  HUD 50: on screen.", kLastRow);
@@ -674,6 +702,20 @@ void reset_controls(void*, int) {
     draw_page();
 }
 
+void reset_all() {
+    for (int i = 0; i < g_row_count; i++) {
+        Row& r = g_rows[i];
+        if (conker_folder_row(i) || r.no_save) continue;
+        if (strncmp(r.key, "ach_", 4) == 0 || strncmp(r.key, "misc_state_", 11) == 0 || strncmp(r.key, "misc_reset_", 11) == 0) continue;
+        *r.value = r.def;
+        fprintf(stderr, "settings: %s=%d (reset_all)\n", r.key, r.def);
+        if (r.on_change != nullptr) r.on_change(r.def);
+        if (r.on_change_ctx != nullptr) r.on_change_ctx(r.ctx, r.def);
+    }
+    changed();
+    g_redraw = true;
+}
+
 void select_slot(int s) {
     const int n = page_count(g_page);
     if (s >= n) s = n - 1;
@@ -687,9 +729,10 @@ void select_slot(int s) {
     const int top = g_top;
     if (s >= 0 && s < g_top) scroll_to(s);
     else if (s >= g_top + kSlots) scroll_to(s - kSlots + 1);
-    if (g_top != top) return;
+    if (g_top != top) { update_conker_subnote(); return; }
     draw_row(old);
     draw_row(s);
+    update_conker_subnote();
 }
 
 void conker_back() {
@@ -1033,7 +1076,8 @@ void recomp3ds::settings_menu_init(const char* base_path, const GameDesc& desc) 
     for (size_t i = 0; i < desc.menu_option_count; i++) {
         const MenuOption& o = desc.menu_options[i];
         const int page = o.new3ds_only && !is_new_3ds ? recomp3ds::PageCount : o.page;
-        add_row({ o.key, o.label, o.lo, o.hi, o.value, o.names, false, o.suffix, o.on_change, page, o.step > 0 ? o.step : 1, o.zero_text });
+        const bool no_save = strncmp(o.key, "ach_", 4) == 0 || strncmp(o.key, "misc_state_save", 15) == 0 || strncmp(o.key, "misc_state_load", 15) == 0;
+        add_row({ o.key, o.label, o.lo, o.hi, o.value, o.names, false, o.suffix, o.on_change, page, o.step > 0 ? o.step : 1, o.zero_text, no_save });
     }
     // After the game's rows: where C-Up is a camera (DK64's first person) it
     // follows the game's camera settings.
@@ -1239,8 +1283,10 @@ void recomp3ds::settings_menu_update() {
     else if (++ticks >= 60) {
         // The runtime's own messages land under the stats line.
         ticks = 0;
-        blank_rows(kHintRow - 1, kHintRow - 1);
-        draw_hint();
+        if (!screen_conker_theme() || g_open) {
+            blank_rows(kHintRow - 1, kHintRow - 1);
+            draw_hint();
+        }
     }
     if (g_open) {
         if(screen_conker_theme()) {
@@ -1351,6 +1397,10 @@ void recomp3ds::settings_menu_update() {
 // At exit: what changed is handed to the saver, which gets a moment to
 // finish; a card that takes longer is left to it (the old file stays until
 // the new one is complete, and load() recovers a .part).
+void recomp3ds::reset_all_options() {
+    reset_all();
+}
+
 void recomp3ds::settings_flush() {
     if (g_dirty) save();
     for (int i = 0; i < 75 && g_save_busy; i++) svcSleepThread(20 * 1000000ll);

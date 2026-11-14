@@ -314,6 +314,7 @@ void screen_conker_set_animated_tails(int enabled);
 void screen_conker_set_lives_display(int mode);
 void screen_conker_set_chapter_display(int visible);
 void screen_conker_set_gfx_text(int visible);
+void screen_conker_set_subnote(const char* text);
 void screen_conker_set_rdram(const uint8_t* rdram);
 void screen_conker_set_player_camera_query(bool (*active)());
 void input_set_touch_stick_mode(int mode);
@@ -323,6 +324,9 @@ void input_get_right_stick(float* x,float* y);
 void input_set_transform(void (*transform)(uint16_t*,float*,float*));
 bool screen_conker_load_rom(const char* path);
 void screen_conker_quit_prompt(bool show, bool restarts);
+void show_top_notice(const char* text, uint32_t duration_ms = 6000);
+void audio_play_chime();
+void reset_all_options();
 
 // Swap the button map while running (a setting that repurposes buttons).
 // The array must stay alive; GameDesc.button_map is the one at start.

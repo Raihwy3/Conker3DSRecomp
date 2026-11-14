@@ -4,16 +4,18 @@
 struct ConkerGlyph { int w=0,h=0,dx=0,dy=0; uint8_t pixels[32*32]{}; };
 ConkerGlyph g_game_glyphs[95];
 uint8_t g_game_map[95]{};
+int8_t g_game_glyph_lut[256]{};
 uint8_t g_options_art[96*32*4]{};
 bool g_game_font_ready=false,g_options_ready=false;
 bool g_conker_options_visible=true;
-bool g_conker_animated_tails=false,g_conker_health_visible=true,g_conker_money_visible=true;
+bool g_conker_animated_tails=true,g_conker_health_visible=true,g_conker_money_visible=true;
 int g_conker_health=-1,g_conker_cash=-1;
 u64 g_conker_tail_tick=0;
 uint8_t g_money_art[32*32*4]{};
-int g_conker_lives_display=0; // Full, icons only, hidden.
-bool g_conker_chapter_visible=true,g_conker_gfx_text=true;
+int g_conker_lives_display=1; // Full, icons only, hidden.
+bool g_conker_chapter_visible=true,g_conker_gfx_text=false;
 char g_conker_section_title[48]{};
+char g_conker_subnote[128]{};
 char g_game_cells[30][40];
 uint8_t g_game_inks[30][40]{};
 int g_text_x=0,g_text_y=0,g_text_ink=0;
@@ -81,6 +83,12 @@ bool load_conker_ui(const char* path) {
     }
     if(good) {
         memcpy(g_game_map,data.data()+0x2E10,95);
+        memset(g_game_glyph_lut,-1,sizeof(g_game_glyph_lut));
+        for(int i=94;i>=0;--i) {
+            unsigned char mc=g_game_map[i];
+            g_game_glyph_lut[mc]=(int8_t)i;
+            if(mc>='A'&&mc<='Z')g_game_glyph_lut[mc+32]=(int8_t)i;
+        }
         g_game_font_ready=true;
         for (int i=0;i<204;++i) {
             const uint8_t* rec=data.data()+0x4910+i*20;
@@ -158,9 +166,7 @@ void record_game_text(const char* text,size_t count) {
     }
 }
 int game_glyph(unsigned char c) {
-    if(c>='a'&&c<='z')c-=32;
-    for(int i=0;i<95;++i)if(g_game_map[i]==c)return i;
-    return -1;
+    return g_game_glyph_lut[c];
 }
 int game_text_width(const char* s) {
     int w=0;for(;*s;++s){int k=game_glyph((unsigned char)*s);w+=*s==' '?4:k>=0?g_game_glyphs[k].w+g_game_glyphs[k].dx:0;}return w;
@@ -369,13 +375,58 @@ void game_health_money(uint16_t* dest) {
             game_scaled_sprite(dest,g_life_digits[*c-'0'],32,32,x,201,24,24);
     }
 }
+void game_rect(uint16_t* dest,int x,int y,int w,int h,int r,int g,int b,int a) {
+    for(int yy=y;yy<y+h;++yy)for(int xx=x;xx<x+w;++xx)game_blend(dest,xx,yy,r,g,b,a);
+}
+void game_box(uint16_t* dest,int x,int y,int w,int h,int r,int g,int b,int a) {
+    for(int xx=x;xx<x+w;++xx){game_blend(dest,xx,y,r,g,b,a);game_blend(dest,xx,y+h-1,r,g,b,a);}
+    for(int yy=y+1;yy<y+h-1;++yy){game_blend(dest,x,yy,r,g,b,a);game_blend(dest,x+w-1,yy,r,g,b,a);}
+}
+void game_ach_icon(uint16_t* dest,int x,int y,bool unlocked) {
+    static const char* const kTrophy[12]={
+        "............",
+        "..GGGGGGGG..",
+        ".G.GGGGGG.G.",
+        ".G.GGGGGG.G.",
+        "..GGGGGGGG..",
+        "...GGGGGG...",
+        "....GGGG....",
+        ".....GG.....",
+        ".....GG.....",
+        "....GGGG....",
+        "...GGGGGG...",
+        "............"
+    };
+    static const char* const kLock[12]={
+        "............",
+        "....SSSS....",
+        "...S....S...",
+        "...S....S...",
+        "..BBBBBBBB..",
+        "..BBBBBBBB..",
+        "..BBBKKBBB..",
+        "..BBBKKBBB..",
+        "..BBBBBBBB..",
+        "..BBBBBBBB..",
+        "............",
+        "............"
+    };
+    const char* const* art=unlocked?kTrophy:kLock;
+    for(int yy=0;yy<12;++yy)for(int xx=0;xx<12;++xx){
+        const char c=art[yy][xx];
+        if(c=='G')game_blend(dest,x+xx,y+yy,255,212,64,255);
+        else if(c=='S')game_blend(dest,x+xx,y+yy,155,162,172,220);
+        else if(c=='B')game_blend(dest,x+xx,y+yy,105,112,122,220);
+        else if(c=='K')game_blend(dest,x+xx,y+yy,35,38,44,240);
+    }
+}
 void compose_conker_panel(uint16_t* dest) {
     static char previous_notice[41]{};
     char notice[41];game_line(notice,27);
     if(strcmp(previous_notice,notice)){strcpy(previous_notice,notice);g_conker_notice_until=notice[0]?svcGetSystemTick()+SYSCLOCK_ARM11*4:0;}
-    game_background();const int dim=255;
-    for(int i=0;i<320*240;++i){auto c=g_theme_base[i];dest[i]=theme_rgb(((c>>11)&31)*dim/31,((c>>5)&63)*dim/63,(c&31)*dim/31);}
-    const uint16_t white=theme_rgb(255,255,255),yellow=theme_rgb(255,223,70),red=theme_rgb(255,110,95);
+    game_background();
+    memcpy(dest,g_theme_base,320*240*sizeof(uint16_t));
+    const uint16_t white=theme_rgb(255,255,255),yellow=theme_rgb(255,223,70),red=theme_rgb(255,110,95),muted=theme_rgb(160,166,174);
     char line[41];
     if(!g_conker_rdram && g_game_font_ready){
         game_text(dest,"CONKER: 3DS RECOMP",160,24,288,yellow,true);
@@ -405,27 +456,185 @@ void compose_conker_panel(uint16_t* dest) {
         game_text(dest,g_conker_section_title,222,16,90,white);
         for(int tab=0;tab<conker_menu::count;++tab){
             const bool active=g_game_inks[5][tab*conker_menu::cell_width]==1;
-            game_text(dest,conker_menu::labels[tab],tab*64+32,42,60,active?yellow:white,true);
-            if(active)for(int x=tab*64+4;x<tab*64+60;++x)game_blend(dest,x,57,255,223,70,150);
+            const int x0=conker_menu::tab_x0[tab], w=conker_menu::tab_w[tab];
+            game_text(dest,conker_menu::labels[tab],x0+w/2,42,w-6,active?yellow:white,true);
+            if(active)for(int x=x0+4;x<x0+w-4;++x)game_blend(dest,x,57,255,223,70,150);
         }
+        const bool ach_page=!strcmp(g_conker_section_title,"Achievements");
         for(int slot=0;slot<7;++slot){
             const int row=7+slot*2, y=60+slot*20;
             game_line(line,row,2,21);if(!line[0])continue;
             const bool selected=g_game_cells[row][0]=='>';
-            // Larger touch rows, a restrained gold selection and separate
-            // value controls keep Conker's font/artwork as the visual focus.
-            if(selected)for(int yy=y;yy<y+19;++yy)for(int xx=8;xx<316;++xx)
-                game_blend(dest,xx,yy,112,82,24,55);
-            if(selected)for(int yy=y+2;yy<y+17;++yy)for(int xx=9;xx<12;++xx)game_blend(dest,xx,yy,255,223,70,190);
-            game_text(dest,line,17,y+4,172,selected?yellow:white);
-            game_line(line,row,24,13);game_text(dest,line,194,y+4,82,selected?yellow:white);
-            for(int yy=y+3;yy<y+17;++yy){game_blend(dest,279,yy,255,223,70,40);game_blend(dest,299,yy,255,223,70,40);}
-            if(strcmp(line,"OPEN"))game_text(dest,"<",283,y+4,12,yellow);
-            game_text(dest,">",304,y+4,12,yellow);
+            char val[24]{};game_line(val,row,24,13);
+            const bool unlocked=!strcmp(val,"UNLOCKED");
+            const bool readonly=unlocked || !strcmp(val,"LOCKED");
+            if(ach_page && readonly){
+                if(selected){
+                    game_rect(dest,8,y,304,18,unlocked?125:68,unlocked?88:58,unlocked?22:36,120);
+                    game_box(dest,8,y,304,18,255,223,70,210);
+                }else if(unlocked){
+                    game_rect(dest,8,y,304,18,74,54,18,90);
+                    game_box(dest,8,y,304,18,190,150,52,130);
+                }else{
+                    game_rect(dest,8,y,304,18,22,26,32,95);
+                    game_box(dest,8,y,304,18,76,82,92,115);
+                }
+                game_ach_icon(dest,13,y+3,unlocked);
+                game_text(dest,line,29,y+4,206,selected?yellow:(unlocked?white:muted));
+                game_rect(dest,240,y+2,68,14,unlocked?145:38,unlocked?104:42,unlocked?24:48,145);
+                game_text(dest,unlocked?"EARNED":"LOCKED",274,y+4,62,unlocked?yellow:muted,true);
+            }else{
+                // Larger touch rows, a restrained gold selection and separate
+                // value controls keep Conker's font/artwork as the visual focus.
+                if(selected)for(int yy=y;yy<y+19;++yy)for(int xx=8;xx<316;++xx)
+                    game_blend(dest,xx,yy,112,82,24,55);
+                if(selected)for(int yy=y+2;yy<y+17;++yy)for(int xx=9;xx<12;++xx)game_blend(dest,xx,yy,255,223,70,190);
+                game_text(dest,line,17,y+4,172,selected?yellow:white);
+                game_text(dest,val,194,y+4,82,selected?yellow:white);
+                if(!readonly){
+                    for(int yy=y+3;yy<y+17;++yy){game_blend(dest,279,yy,255,223,70,40);game_blend(dest,299,yy,255,223,70,40);}
+                    if(strcmp(val,"OPEN"))game_text(dest,"<",283,y+4,12,yellow);
+                    game_text(dest,">",304,y+4,12,yellow);
+                }
+            }
         }
-        game_line(line,21);game_text(dest,line,8,208,304,white);
+        game_line(line,21);
+        int ach_u=0,ach_t=0;
+        if(ach_page && sscanf(line,"Unlocked: %d / %d",&ach_u,&ach_t)==2 && ach_t>0){
+            char prog[24];snprintf(prog,sizeof(prog),"%d / %d EARNED",ach_u,ach_t);
+            game_text(dest,prog,8,203,116,yellow);
+            game_rect(dest,130,206,120,8,20,24,30,150);
+            game_box(dest,130,206,120,8,190,155,55,160);
+            const int fill=(116*ach_u)/ach_t;
+            if(fill>0)game_rect(dest,132,208,fill,4,255,212,64,230);
+            if(strstr(line,"^ more"))game_text(dest,"^",264,203,16,white);
+            if(strstr(line,"v more"))game_text(dest,"v",288,203,16,white);
+        }else{
+            game_text(dest,line,8,208,304,white);
+        }
+        if(g_conker_subnote[0]){
+            if(ach_page){
+                game_rect(dest,8,218,304,19,18,22,28,150);
+                game_box(dest,8,218,304,19,165,134,48,135);
+                const bool hidden=!strcmp(g_conker_subnote,"???");
+                game_text(dest,g_conker_subnote,14,222,292,hidden?muted:yellow);
+            }else{
+                game_text(dest,g_conker_subnote,8,224,304,yellow);
+            }
+        }
     }
     // FPS is optional, and belongs in the footer rather than a terminal header.
-    if(recomp3ds::settings_perf_monitor()) {game_line(line,1);game_text(dest,line,8,g_conker_menu?224:180,304,white);}
-    for(int row=22;row<30;++row){if(row==27 && (!g_conker_gfx_text || svcGetSystemTick()>g_conker_notice_until))continue;game_line(line,row);if(line[0])game_text(dest,line,4,row*8-1,312,g_game_inks[row][0]==2?red:white);}
+    if(recomp3ds::settings_perf_monitor() && (!g_conker_menu || !g_conker_subnote[0])) {game_line(line,1);game_text(dest,line,8,g_conker_menu?224:180,304,white);}
+    const bool ach_toast=!strncmp(notice,"Achievement unlocked: ",22) && svcGetSystemTick()<=g_conker_notice_until;
+    if(ach_toast){
+        game_rect(dest,20,202,280,32,26,22,16,210);
+        game_box(dest,20,202,280,32,255,212,64,235);
+        game_ach_icon(dest,28,212,true);
+        game_text(dest,"ACHIEVEMENT UNLOCKED",46,205,244,yellow);
+        game_text(dest,notice+22,46,218,244,white);
+    }
+    for(int row=22;row<30;++row){if(row==27 && (ach_toast || !g_conker_gfx_text || svcGetSystemTick()>g_conker_notice_until))continue;game_line(line,row);if(line[0])game_text(dest,line,4,row*8-1,312,g_game_inks[row][0]==2?red:white);}
+}
+bool render_conker_toast_rgba4(const char* text,uint16_t* out,int& out_w,int& out_h) {
+    if(!g_game_font_ready || !text || !*text)return false;
+    constexpr int W=184,H=34;
+    out_w=W;out_h=H;
+    uint8_t buf[W*H*4]{};
+    auto set_px=[&](int x,int y,int r,int g,int b,int a){
+        if((unsigned)x>=(unsigned)W || (unsigned)y>=(unsigned)H)return;
+        uint8_t* p=buf+(y*W+x)*4;p[0]=(uint8_t)r;p[1]=(uint8_t)g;p[2]=(uint8_t)b;p[3]=(uint8_t)a;
+    };
+    auto blend_px=[&](int x,int y,int r,int g,int b,int a){
+        if((unsigned)x>=(unsigned)W || (unsigned)y>=(unsigned)H || a<=0)return;
+        uint8_t* p=buf+(y*W+x)*4;
+        p[0]=(uint8_t)((r*a+p[0]*(255-a))/255);
+        p[1]=(uint8_t)((g*a+p[1]*(255-a))/255);
+        p[2]=(uint8_t)((b*a+p[2]*(255-a))/255);
+        p[3]=(uint8_t)std::max((int)p[3],a);
+    };
+    const bool is_ach=!strncmp(text,"Achievement unlocked: ",22);
+    for(int y=0;y<H;++y){
+        for(int x=0;x<W;++x){
+            const int cx=x<3?3-x:(x>=W-3?x-(W-4):0);
+            const int cy=y<3?3-y:(y>=H-3?y-(H-4):0);
+            if(cx+cy>4)continue;
+            const int d=std::min({x,y,W-1-x,H-1-y});
+            if(d==0 || cx+cy==4){set_px(x,y,16,10,5,245);continue;}
+            if(d<=2){
+                const bool hi=(x<W-3 && y<H-3 && (x<=2 || y<=2));
+                if(is_ach)set_px(x,y,hi?255:175,hi?218:118,hi?78:24,245);
+                else set_px(x,y,hi?190:115,hi?170:100,hi?140:80,240);
+                continue;
+            }
+            if(d==3){set_px(x,y,24,14,6,238);continue;}
+            int r=44,g=28,b=14;
+            if(g_chapter_surface_ready[9]){
+                const uint16_t tex=g_chapter_surfaces[9][(y&63)*32+(x&31)];
+                r=(((tex>>11)&31)*255/31)*42/100;
+                g=(((tex>>5)&63)*255/63)*38/100;
+                b=((tex&31)*255/31)*34/100;
+            }else{
+                r=46-(y/4);g=30-(y/5);b=15-(y/8);
+            }
+            if(y<15){r=std::min(255,r+12);g=std::min(255,g+8);b=std::min(255,b+4);}
+            set_px(x,y,r,g,b,230);
+        }
+    }
+    if(is_ach){
+        static const char* const kTrophy16[16]={
+            "....OOOOOOOO....",
+            "...OYYYYYYYYO...",
+            ".OOYWYYYYYYAYOO.",
+            "OYOYYWYYYYYAYOYO",
+            "OYOYYWYYYYYAYOYO",
+            ".OOYYYYYYYYAAOO.",
+            "...OOYYYYAAOO...",
+            "....OYYYYAAO....",
+            ".....OYYAAO.....",
+            "......OYAO......",
+            "......OYAO......",
+            ".....OYYYYO.....",
+            "....OYYYYAAO....",
+            "...OAAAAAAAAO...",
+            "...OOOOOOOOOO...",
+            "................"
+        };
+        for(int ty=0;ty<16;++ty){
+            for(int tx=0;tx<16;++tx){
+                const char c=kTrophy16[ty][tx];
+                if(c=='O')set_px(7+tx,9+ty,18,10,4,255);
+                else if(c=='W')set_px(7+tx,9+ty,255,250,190,255);
+                else if(c=='Y')set_px(7+tx,9+ty,255,214,56,255);
+                else if(c=='A')set_px(7+tx,9+ty,196,130,22,255);
+            }
+        }
+    }
+    auto draw_n64=[&](const char* s,int x0,int y0,int maxw,int r,int g,int b){
+        const int width=game_text_width(s);if(!width)return;
+        const float scale=std::min(0.85f,(float)maxw/width);
+        for(int pass=0;pass<2;++pass){
+            float cursor=(float)x0;
+            for(const unsigned char* p=(const unsigned char*)s;*p;++p){
+                int k=game_glyph(*p);if(*p==' '){cursor+=4*scale;continue;}if(k<0)continue;
+                const auto& glyph=g_game_glyphs[k];
+                const int dw=std::max(1,(int)(glyph.w*scale)),dh=std::max(1,(int)(glyph.h*scale));
+                for(int yy=0;yy<dh;++yy)for(int xx=0;xx<dw;++xx){
+                    const int a=glyph.pixels[(yy*glyph.h/dh)*glyph.w+xx*glyph.w/dw];
+                    blend_px(int(cursor+glyph.dx*scale)+xx+(pass==0),y0+int(glyph.dy*scale)+yy+(pass==0),pass?r:0,pass?g:0,pass?b:0,a);
+                }
+                cursor+=(glyph.w+glyph.dx)*scale;
+            }
+        }
+    };
+    if(is_ach){
+        draw_n64("ACHIEVEMENT UNLOCKED",27,5,150,255,223,70);
+        draw_n64(text+22,27,18,150,255,250,232);
+    }else{
+        draw_n64(text,8,11,168,255,250,232);
+    }
+    for(int i=0;i<W*H;++i){
+        const uint8_t* p=buf+i*4;
+        out[i]=(uint16_t)(((p[0]>>4)<<12)|((p[1]>>4)<<8)|((p[2]>>4)<<4)|(p[3]>>4));
+    }
+    return true;
 }

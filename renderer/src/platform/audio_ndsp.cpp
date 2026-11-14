@@ -4,6 +4,7 @@
 #include <atomic>
 #include <3ds.h>
 #include <opendsp.h>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +29,8 @@ int16_t* g_silence = nullptr;   // a buffer's worth of zeros that every silent b
 int g_next = 0;
 float g_volume = 1.0f;
 std::atomic<bool> g_enabled{ true };     // the menu's Audio setting
+std::atomic<uint32_t> g_chime_pos{ 0 };
+std::atomic<uint32_t> g_chime_len{ 0 };
 bool g_started = false;
 volatile bool g_paused = false;         // audio_set_paused: the HOME prompt is up
 volatile uint32_t g_submitted = 0, g_dropped = 0, g_underruns = 0;
@@ -208,15 +211,57 @@ void recomp3ds::audio_queue_samples(int16_t* samples, size_t sample_count) {
         // the voices on the DSP (dsp_synth.h) too: silence, queued all the
         // same so the game's pacing (and the DSP synthesizer's clock) does
         // not change, from the one buffer of zeros (no copy, no flush).
-        if ((!g_enabled || (recomp3ds::dsp_synth_enabled() && !recomp3ds::dsp_synth_cpu_stream())) && g_silence != nullptr) {
+        uint32_t chime_pos = g_chime_pos.load(std::memory_order_relaxed);
+        const uint32_t chime_len = g_chime_len.load(std::memory_order_relaxed);
+        const bool chime_active = g_enabled.load(std::memory_order_relaxed) && chime_pos < chime_len;
+        const bool dsp_silent = !g_enabled || (recomp3ds::dsp_synth_enabled() && !recomp3ds::dsp_synth_cpu_stream());
+        if (dsp_silent && !chime_active && g_silence != nullptr) {
             dst = g_silence;
         }
         else {
             const float vol = g_enabled ? g_volume : 0.0f;
-            for (size_t i = 0; i < n; i++) {
-                // Swap the pair: RDRAM halfwords are stored xor 2, so L and R arrive reversed.
-                dst[i * 2 + 0] = (int16_t)(src[i * 2 + 1] * vol);
-                dst[i * 2 + 1] = (int16_t)(src[i * 2 + 0] * vol);
+            if (dsp_silent) {
+                memset(dst, 0, n * 2 * sizeof(int16_t));
+            } else {
+                for (size_t i = 0; i < n; i++) {
+                    // Swap the pair: RDRAM halfwords are stored xor 2, so L and R arrive reversed.
+                    dst[i * 2 + 0] = (int16_t)(src[i * 2 + 1] * vol);
+                    dst[i * 2 + 1] = (int16_t)(src[i * 2 + 0] * vol);
+                }
+            }
+            if (chime_active) {
+                const float rate = (float)(g_rate > 0 ? g_rate : 32000);
+                constexpr float kTwoPi = 6.28318530718f;
+                struct Note { float start, freq, decay, amp; };
+                static constexpr Note kNotes[] = {
+                    { 0.00f,  523.25f, 14.0f, 0.34f }, // C5
+                    { 0.08f,  659.25f, 14.0f, 0.36f }, // E5
+                    { 0.16f,  783.99f, 13.0f, 0.40f }, // G5
+                    { 0.24f, 1046.50f, 11.0f, 0.46f }, // C6
+                    { 0.36f, 1318.51f,  4.8f, 0.56f }, // E6
+                    { 0.36f,  783.99f,  5.5f, 0.22f }, // G5 chord shimmer
+                    { 0.36f, 1046.50f,  5.5f, 0.24f }, // C6 chord shimmer
+                };
+                for (size_t i = 0; i < n && chime_pos < chime_len; i++, chime_pos++) {
+                    const float t = (float)chime_pos / rate;
+                    float s = 0.0f;
+                    for (const Note& note : kNotes) {
+                        const float dt = t - note.start;
+                        if (dt >= 0.0f) {
+                            const float env = (dt < 0.005f ? dt / 0.005f : 1.0f) * std::exp(-dt * note.decay);
+                            const float tone = std::sin(kTwoPi * note.freq * dt)
+                                + 0.30f * std::sin(kTwoPi * 2.0f * note.freq * dt)
+                                + 0.10f * std::sin(kTwoPi * 3.0f * note.freq * dt);
+                            s += tone * env * note.amp;
+                        }
+                    }
+                    const int32_t add = (int32_t)(s * 7000.0f * vol);
+                    int32_t l = (int32_t)dst[i * 2 + 0] + add;
+                    int32_t r = (int32_t)dst[i * 2 + 1] + add;
+                    dst[i * 2 + 0] = (int16_t)(l < -32768 ? -32768 : (l > 32767 ? 32767 : l));
+                    dst[i * 2 + 1] = (int16_t)(r < -32768 ? -32768 : (r > 32767 ? 32767 : r));
+                }
+                g_chime_pos.store(chime_pos, std::memory_order_relaxed);
             }
             // The kernel's own flush: DSP_FlushDataCache is a request to the
             // DSP module on core 1, which the game's audio thread then waited
@@ -294,6 +339,13 @@ recomp3ds::AudioCounters recomp3ds::audio_take_counters() {
 }
 
 bool recomp3ds::audio_opendsp() { return g_opendsp; }
+
+void recomp3ds::audio_play_chime() {
+    const uint32_t rate = g_rate > 0 ? g_rate : 32000;
+    g_chime_len.store(0, std::memory_order_relaxed);
+    g_chime_pos.store(0, std::memory_order_relaxed);
+    g_chime_len.store((uint32_t)(rate * 115 / 100), std::memory_order_release);
+}
 
 void recomp3ds::audio_shutdown() {
     if (g_ready) {

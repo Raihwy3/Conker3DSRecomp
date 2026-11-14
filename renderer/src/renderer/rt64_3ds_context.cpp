@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <string>
 #include <sys/stat.h>
 #include <ctime>
 #include <unordered_map>
@@ -113,6 +115,59 @@ std::atomic<uint32_t> g_bottom_see_through{ 0 };    // set_bottom_console_see_th
 std::atomic<uint32_t> g_bottom_last_copy_ms{ 0 };   // 0: none yet
 
 uint32_t now_ms() { return (uint32_t)(svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000)); }
+
+struct TopToast {
+    std::string text;
+    std::vector<uint16_t> rgba4;
+    int w = 0, h = 0;
+    uint32_t duration_ms;
+};
+LightLock g_toast_lock;
+std::atomic<bool> g_toast_lock_ok{ false };
+std::deque<TopToast> g_toast_queue;
+bool g_toast_active = false;
+uint32_t g_toast_until_ms = 0;
+uint32_t g_toast_seq = 0;
+std::string g_toast_text;
+std::vector<uint16_t> g_toast_rgba4;
+int g_toast_w = 0, g_toast_h = 0;
+
+void ensure_toast_lock() {
+    if (!g_toast_lock_ok.exchange(true)) LightLock_Init(&g_toast_lock);
+}
+
+bool toast_snapshot(uint32_t& out_seq, std::string& out_text, std::vector<uint16_t>& out_rgba4, int& out_w, int& out_h) {
+    ensure_toast_lock();
+    LightLock_Lock(&g_toast_lock);
+    const uint32_t now = now_ms();
+    if (g_toast_active && (int32_t)(now - g_toast_until_ms) >= 0) {
+        g_toast_active = false;
+        g_toast_text.clear();
+        g_toast_rgba4.clear();
+        g_toast_w = g_toast_h = 0;
+    }
+    if (!g_toast_active && !g_toast_queue.empty()) {
+        g_toast_text = std::move(g_toast_queue.front().text);
+        g_toast_rgba4 = std::move(g_toast_queue.front().rgba4);
+        g_toast_w = g_toast_queue.front().w;
+        g_toast_h = g_toast_queue.front().h;
+        const uint32_t dur = g_toast_queue.front().duration_ms;
+        g_toast_queue.pop_front();
+        g_toast_until_ms = now + dur;
+        g_toast_active = true;
+        g_toast_seq++;
+    }
+    const bool active = g_toast_active;
+    if (active) {
+        out_seq = g_toast_seq;
+        out_text = g_toast_text;
+        out_rgba4 = g_toast_rgba4;
+        out_w = g_toast_w;
+        out_h = g_toast_h;
+    }
+    LightLock_Unlock(&g_toast_lock);
+    return active;
+}
 volatile bool g_capture_request = false;
 volatile int g_seq_request = 0;         // rt64_3ds::request_frame_sequence
 volatile bool g_pair_request = false;   // rt64_3ds::request_capture_pair
@@ -1328,6 +1383,12 @@ private:
             if (post_ok_) { C3D_TexSetFilter(&post_tex_, GPU_LINEAR, GPU_LINEAR); C3D_TexSetWrap(&post_tex_, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE); }
         }
         if (rt64_3ds::render_desc().hud_on_bottom_supported) init_bottom();
+        toast_tex_ok_ = C3D_TexInit(&toast_tex_, 256, 64, GPU_RGBA4);
+        if (toast_tex_ok_) {
+            memset(toast_tex_.data, 0, 256 * 64 * 2);
+            flush_dcache(toast_tex_.data, 256 * 64 * 2);
+            C3D_TexSetFilter(&toast_tex_, GPU_NEAREST, GPU_NEAREST);
+        }
         fprintf(stderr, "rt64-3ds: eye targets: %s colour, %s depth (VRAM left %u KB)\n", color16_ ? "RGB565" : "RGBA8",
                 depth16_ ? "16-bit" : "24-bit + stencil", (unsigned)(vramSpaceFree() / 1024));
         // The game frame's depth, copied by the GPU after its left eye's draws
@@ -1369,6 +1430,7 @@ private:
             start_presenter();
         }
         LightLock_Init(&g_readback_lock);
+        ensure_toast_lock();
         for (int i = 0; i < 2; i++) g_readback[i] = (u16*)linearAlloc(240 * 400 * sizeof(u16));
         if (vbo_[0] == nullptr || vbo_[1] == nullptr) {
             fprintf(stderr, "rt64-3ds: vertex buffer allocation failed\n");
@@ -1711,6 +1773,11 @@ private:
         // mid-frame (see replay_split below).
         const bool split = frame_.frame_sample_last >= 0 && frame_rt_ != nullptr && !offscreen_frame;
         if (split) fc_frames_++;
+        uint32_t toast_seq = 0;
+        std::string toast_text;
+        std::vector<uint16_t> toast_rgba4;
+        int toast_w = 0, toast_h = 0;
+        const bool toast_on = !offscreen_frame && toast_tex_ok_ && n + 54 <= kVboVerts && toast_snapshot(toast_seq, toast_text, toast_rgba4, toast_w, toast_h);
         // The right eye from the left eye's commands: the left eye's draws
         // are a command list of their own (they set all their state
         // themselves, from caches emptied at its start), queued a second time
@@ -1917,6 +1984,7 @@ private:
         }
         if (ghost && sfd.on && !offscreen_frame) ghost_pass((uint32_t)n);
         if (post) post_pass((uint32_t)n + 12, cur_eye_[pass]);
+        if (toast_on) draw_toast(cur_eye_[pass], vb + n + 48, (uint32_t)(n + 48), toast_seq, toast_text, toast_rgba4, toast_w, toast_h);
         }   // eye passes
         // dbg_frame_trace_from / _count: the replay's decisions, a line a
         // frame, for frames first..first+count.
@@ -4435,6 +4503,9 @@ public:
     float bottom_scale_ = 1.0f, bottom_ox_ = 0.0f, bottom_oy_ = 0.0f;
     C3D_Tex con_tex_{};             // the console's text, 512x256 RGBA4, black see-through
     bool con_tex_ok_ = false;
+    C3D_Tex toast_tex_{};           // top-screen bottom-right notification toast, 256x64 RGBA4
+    bool toast_tex_ok_ = false;
+    uint32_t toast_drawn_seq_ = 0;
     bool bottom_shown_ = false;     // the last game frame drew it
     uint32_t bottom_hash_ = 0;
     int bottom_same_ = 0;           // game frames it was skipped for since
@@ -4524,6 +4595,162 @@ public:
         C3D_AlphaTest(false, GPU_ALWAYS, 0);
         C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
         C3D_DrawArrays(GPU_TRIANGLES, first, 6);
+    }
+    static void toast_glyph(char ch, uint8_t out[5]) {
+        static constexpr uint8_t kFont[95][5] = {
+            {0x00,0x00,0x00,0x00,0x00},{0x00,0x00,0x5F,0x00,0x00},{0x00,0x07,0x00,0x07,0x00},{0x14,0x7F,0x14,0x7F,0x14},
+            {0x24,0x2A,0x7F,0x2A,0x12},{0x23,0x13,0x08,0x64,0x62},{0x36,0x49,0x55,0x22,0x50},{0x00,0x05,0x03,0x00,0x00},
+            {0x00,0x1C,0x22,0x41,0x00},{0x00,0x41,0x22,0x1C,0x00},{0x14,0x08,0x3E,0x08,0x14},{0x08,0x08,0x3E,0x08,0x08},
+            {0x00,0x50,0x30,0x00,0x00},{0x08,0x08,0x08,0x08,0x08},{0x00,0x60,0x60,0x00,0x00},{0x20,0x10,0x08,0x04,0x02},
+            {0x3E,0x51,0x49,0x45,0x3E},{0x00,0x42,0x7F,0x40,0x00},{0x42,0x61,0x51,0x49,0x46},{0x21,0x41,0x45,0x4B,0x31},
+            {0x18,0x14,0x12,0x7F,0x10},{0x27,0x45,0x45,0x45,0x39},{0x3C,0x4A,0x49,0x49,0x30},{0x01,0x71,0x09,0x05,0x03},
+            {0x36,0x49,0x49,0x49,0x36},{0x06,0x49,0x49,0x29,0x1E},{0x00,0x36,0x36,0x00,0x00},{0x00,0x56,0x36,0x00,0x00},
+            {0x08,0x14,0x22,0x41,0x00},{0x14,0x14,0x14,0x14,0x14},{0x00,0x41,0x22,0x14,0x08},{0x02,0x01,0x51,0x09,0x06},
+            {0x32,0x49,0x79,0x41,0x3E},{0x7E,0x11,0x11,0x11,0x7E},{0x7F,0x49,0x49,0x49,0x36},{0x3E,0x41,0x41,0x41,0x22},
+            {0x7F,0x41,0x41,0x22,0x1C},{0x7F,0x49,0x49,0x49,0x41},{0x7F,0x09,0x09,0x09,0x01},{0x3E,0x41,0x49,0x49,0x7A},
+            {0x7F,0x08,0x08,0x08,0x7F},{0x00,0x41,0x7F,0x41,0x00},{0x20,0x40,0x41,0x3F,0x01},{0x7F,0x08,0x14,0x22,0x41},
+            {0x7F,0x40,0x40,0x40,0x40},{0x7F,0x02,0x0C,0x02,0x7F},{0x7F,0x04,0x08,0x10,0x7F},{0x3E,0x41,0x41,0x41,0x3E},
+            {0x7F,0x09,0x09,0x09,0x06},{0x3E,0x41,0x51,0x21,0x5E},{0x7F,0x09,0x19,0x29,0x46},{0x46,0x49,0x49,0x49,0x31},
+            {0x01,0x01,0x7F,0x01,0x01},{0x3F,0x40,0x40,0x40,0x3F},{0x1F,0x20,0x40,0x20,0x1F},{0x3F,0x40,0x38,0x40,0x3F},
+            {0x63,0x14,0x08,0x14,0x63},{0x07,0x08,0x70,0x08,0x07},{0x61,0x51,0x49,0x45,0x43},{0x00,0x7F,0x41,0x41,0x00},
+            {0x02,0x04,0x08,0x10,0x20},{0x00,0x41,0x41,0x7F,0x00},{0x04,0x02,0x01,0x02,0x04},{0x40,0x40,0x40,0x40,0x40},
+            {0x00,0x01,0x02,0x04,0x00},{0x20,0x54,0x54,0x54,0x78},{0x7F,0x48,0x44,0x44,0x38},{0x38,0x44,0x44,0x44,0x20},
+            {0x38,0x44,0x44,0x48,0x7F},{0x38,0x54,0x54,0x54,0x18},{0x08,0x7E,0x09,0x01,0x02},{0x0C,0x52,0x52,0x52,0x3E},
+            {0x7F,0x08,0x04,0x04,0x78},{0x00,0x44,0x7D,0x40,0x00},{0x20,0x40,0x44,0x3D,0x00},{0x7F,0x10,0x28,0x44,0x00},
+            {0x00,0x41,0x7F,0x40,0x00},{0x7C,0x04,0x18,0x04,0x78},{0x7C,0x08,0x04,0x04,0x78},{0x38,0x44,0x44,0x44,0x38},
+            {0x7C,0x14,0x14,0x14,0x08},{0x08,0x14,0x14,0x18,0x7C},{0x7C,0x08,0x04,0x04,0x08},{0x48,0x54,0x54,0x54,0x20},
+            {0x04,0x3F,0x44,0x40,0x20},{0x3C,0x40,0x40,0x20,0x7C},{0x1C,0x20,0x40,0x20,0x1C},{0x3C,0x40,0x30,0x40,0x3C},
+            {0x44,0x28,0x10,0x28,0x44},{0x0C,0x50,0x50,0x50,0x3C},{0x44,0x64,0x54,0x4C,0x44},{0x00,0x08,0x36,0x41,0x00},
+            {0x00,0x00,0x7F,0x00,0x00},{0x00,0x41,0x36,0x08,0x00},{0x08,0x04,0x08,0x10,0x08}
+        };
+        const int idx = (ch >= 32 && ch <= 126) ? (ch - 32) : 0;
+        memcpy(out, kFont[idx], 5);
+    }
+    int toast_w_ = 220, toast_h_ = 36;
+    void update_toast_tex(const std::string& text, const std::vector<uint16_t>& rgba4, int w, int h) {
+        if (!toast_tex_ok_) return;
+        constexpr int kTexW = 256, kTexH = 64, kTilesX = kTexW / 8;
+        uint16_t* dst = (uint16_t*)toast_tex_.data;
+        memset(dst, 0, kTexW * kTexH * 2);
+        auto put_px = [&](int x, int y, uint16_t c) {
+            if ((unsigned)x >= (unsigned)kTexW || (unsigned)y >= (unsigned)kTexH) return;
+            const int yd = (kTexH - 1) - y;
+            const unsigned mx = (x & 1) | ((x & 2) << 1) | ((x & 4) << 2);
+            const unsigned my = ((yd & 1) << 1) | ((yd & 2) << 2) | ((yd & 4) << 3);
+            dst[((yd >> 3) * kTilesX + (x >> 3)) * 64 + (my | mx)] = c;
+        };
+        if (!rgba4.empty() && w > 0 && h > 0 && w <= kTexW && h <= kTexH && (int)rgba4.size() >= w * h) {
+            toast_w_ = w;
+            toast_h_ = h;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    put_px(x, y, rgba4[y * w + x]);
+                }
+            }
+            flush_dcache(dst, kTexW * kTexH * 2);
+            return;
+        }
+        toast_w_ = 220;
+        toast_h_ = 36;
+        constexpr int kW = 220, kH = 36;
+        const char* ach_prefix = "Achievement unlocked: ";
+        const bool is_ach = strncmp(text.c_str(), ach_prefix, 22) == 0;
+        const uint16_t bg = 0x211D;
+        const uint16_t bg_top = 0x321D;
+        const uint16_t border = is_ach ? 0xFD4E : 0xA83D;
+        const uint16_t gold = 0xFD4F;
+        for (int y = 0; y < kH; y++) {
+            for (int x = 0; x < kW; x++) {
+                const bool edge = (x == 0 || y == 0 || x == kW - 1 || y == kH - 1);
+                put_px(x, y, edge ? border : (y < 16 ? bg_top : bg));
+            }
+        }
+        if (is_ach) {
+            static const char* const kTrophy[12] = {
+                "............",
+                "..GGGGGGGG..",
+                ".G.GGGGGG.G.",
+                ".G.GGGGGG.G.",
+                "..GGGGGGGG..",
+                "...GGGGGG...",
+                "....GGGG....",
+                ".....GG.....",
+                ".....GG.....",
+                "....GGGG....",
+                "...GGGGGG...",
+                "............"
+            };
+            for (int ty = 0; ty < 12; ty++) {
+                for (int tx = 0; tx < 12; tx++) {
+                    if (kTrophy[ty][tx] == 'G') put_px(8 + tx, 12 + ty, gold);
+                }
+            }
+        }
+        auto draw_str = [&](int x0, int y0, const char* s, uint16_t col) {
+            int cx = x0;
+            for (; *s && cx + 5 <= kW - 6; ++s, cx += 6) {
+                uint8_t g[5];
+                toast_glyph(*s, g);
+                for (int col_i = 0; col_i < 5; col_i++) {
+                    for (int row_i = 0; row_i < 7; row_i++) {
+                        if (g[col_i] & (1u << row_i)) put_px(cx + col_i, y0 + row_i, col);
+                    }
+                }
+            }
+        };
+        if (is_ach) {
+            draw_str(26, 7, "ACHIEVEMENT UNLOCKED", gold);
+            draw_str(26, 20, text.c_str() + 22, 0xFFFF);
+        } else {
+            draw_str(8, 14, text.c_str(), 0xFFFF);
+        }
+        flush_dcache(dst, kTexW * kTexH * 2);
+    }
+    void draw_toast(C3D_RenderTarget* target, GpuVertex* q, uint32_t first, uint32_t seq, const std::string& text,
+                    const std::vector<uint16_t>& rgba4, int tw, int th) {
+        if (target == nullptr) return;
+        if (seq != toast_drawn_seq_) {
+            update_toast_tex(text, rgba4, tw, th);
+            toast_drawn_seq_ = seq;
+            fprintf(stderr, "rt64-3ds: draw_toast seq=%u '%s' geo=%dx%d x0=%d (%dx%d)\n", seq, text.c_str(), geo_.w, geo_.h, geo_.x0, toast_w_, toast_h_);
+        }
+        draw_on(target);
+        cur_target_ = kFrameTarget;
+        frame_viewport_ = false;
+        set_cull(GPU_CULL_NONE);
+        const float total_w = (float)geo_.w + 2.0f * geo_.x0;
+        const float sx = total_w / 400.0f;
+        const float sy = (float)geo_.h / 240.0f;
+        const float r = ((float)geo_.w + geo_.x0) - 6.0f * sx;
+        const float l = r - (float)toast_w_ * sx;
+        const float b = (float)geo_.h - 6.0f * sy;
+        const float t = b - (float)toast_h_ * sy;
+        const float xs[6] = { l, r, r, l, r, l }, ys[6] = { t, t, b, t, b, b };
+        const float us[6] = { 0.0f, (float)toast_w_, (float)toast_w_, 0.0f, (float)toast_w_, 0.0f };
+        const float vs[6] = { 0.0f, 0.0f, (float)toast_h_, 0.0f, (float)toast_h_, (float)toast_h_ };
+        for (int i = 0; i < 6; i++) q[i] = GpuVertex{ xs[i], ys[i], 0.0f, 1.0f, us[i], vs[i], 255, 255, 255, 255 };
+        flush_dcache(q, 6 * sizeof(GpuVertex));
+        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, u_xform_, &proj_);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_stereo_, 0.0f, 0.0f, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_eye_, 1.0f, 0.0f, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uvscale_, 1.0f / 256.0f, 1.0f / 64.0f, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uv1_, 1.0f / 256.0f, 1.0f / 64.0f, 0.0f, 0.0f);
+        for (int i = 0; i < 6; i++) {
+            C3D_TexEnv* env = C3D_GetTexEnv(i);
+            C3D_TexEnvInit(env);
+            if (i == 0) C3D_TexEnvSrc(env, C3D_Both, GPU_TEXTURE0, GPU_TEXTURE0, GPU_TEXTURE0);
+            else C3D_TexEnvSrc(env, C3D_Both, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
+            C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+        }
+        C3D_TexBind(0, &toast_tex_);
+        C3D_TexBind(1, &white_);
+        C3D_TexBind(2, &white_);
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+        C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+        C3D_AlphaTest(false, GPU_ALWAYS, 0);
+        C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+        C3D_DrawArrays(GPU_TRIANGLES, first, 6);
+        forget_draw_state();
     }
     // The touch screen's image into its framebuffer (on the GX queue after
     // its draws).
@@ -4883,6 +5110,29 @@ bool rt64_3ds::capture_stop(int timeout_ms) {
 void rt64_3ds::request_screenshot() { g_shot_state = 0; g_shot_request = true; }
 int rt64_3ds::screenshot_state() { return g_shot_state; }
 const char* rt64_3ds::screenshot_name() { return g_shot_name; }
+void rt64_3ds::show_top_notice(const char* text, uint32_t duration_ms) {
+    if (!text || !*text) return;
+    ensure_toast_lock();
+    LightLock_Lock(&g_toast_lock);
+    TopToast item;
+    item.text = text;
+    item.duration_ms = duration_ms ? duration_ms : 6000;
+    g_toast_queue.push_back(std::move(item));
+    LightLock_Unlock(&g_toast_lock);
+}
+
+void rt64_3ds::show_top_notice_rgba(const uint16_t* rgba4, int w, int h, uint32_t duration_ms) {
+    if (!rgba4 || w <= 0 || h <= 0) return;
+    ensure_toast_lock();
+    LightLock_Lock(&g_toast_lock);
+    TopToast item;
+    item.w = w;
+    item.h = h;
+    item.rgba4.assign(rgba4, rgba4 + w * h);
+    item.duration_ms = duration_ms ? duration_ms : 6000;
+    g_toast_queue.push_back(std::move(item));
+    LightLock_Unlock(&g_toast_lock);
+}
 
 bool rt64_3ds::read_back_frame(uint8_t* rdram, uint32_t fb_addr, uint32_t fb_width, int x, int y, int w, int h) {
     LightLock_Lock(&g_readback_lock);

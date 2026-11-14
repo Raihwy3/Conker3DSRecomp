@@ -65,7 +65,7 @@ static int number(struct Json *j,int i,size_t *out) {
     if(!n || n>NATIVE_UPDATE_MAX_ZIP)return 0;
     *out=n;return 1;
 }
-int native_update_release(const char *json,size_t length,const char *installed,struct NativeUpdateRelease *out) {
+int native_update_release_for(const char *json,size_t length,const char *installed,int cia,struct NativeUpdateRelease *out) {
     if(!json || !out || length>65536)return 0;
     jsmntok_t *tokens=calloc(4096,sizeof *tokens);if(!tokens)return 0;
     jsmn_parser parser;jsmn_init(&parser);int n=jsmn_parse(&parser,json,length,tokens,4096);
@@ -79,8 +79,11 @@ int native_update_release(const char *json,size_t length,const char *installed,s
         char name[160],hash[80];
         if(!string(&j,field(&j,i,"name"),name,sizeof name))continue;
         size_t size=strlen(name);
-        if(size<5 || strcmp(name+size-4,".zip") ||
+        if(size<5 || strcmp(name+size-4,cia?".cia":".zip") ||
            strncmp(name,"conker-3ds-recomp",17))continue;
+        // Asset names are path components, never paths or escaped URLs.
+        int safe=1;for(size_t k=0;k<size;k++)if(!((name[k]>='a' && name[k]<='z') || (name[k]>='A' && name[k]<='Z') || (name[k]>='0' && name[k]<='9') || name[k]=='-' || name[k]=='_' || name[k]=='.'))safe=0;
+        if(!safe)continue;
         if(!string(&j,field(&j,i,"browser_download_url"),r.url,sizeof r.url) ||
            !string(&j,field(&j,i,"digest"),hash,sizeof hash) || strncmp(hash,"sha256:",7) || strlen(hash)!=71 ||
            !number(&j,field(&j,i,"size"),&r.bytes))continue;
@@ -91,6 +94,9 @@ int native_update_release(const char *json,size_t length,const char *installed,s
         memcpy(r.digest,hash+7,65);*out=r;ok=1;break;
     }
 end:free(tokens);return ok;
+}
+int native_update_release(const char *json,size_t length,const char *installed,struct NativeUpdateRelease *out) {
+    return native_update_release_for(json,length,installed,0,out);
 }
 static int fail(char *out,size_t capacity,const char *text){if(capacity)snprintf(out,capacity,"%s",text);return 0;}
 static int path(char *out,size_t capacity,const char *dir,const char *name,const char *suffix){int n=snprintf(out,capacity,"%s/%s%s",dir,name,suffix);return n>=0 && (size_t)n<capacity;}
@@ -170,4 +176,24 @@ int native_update_install(const char *archive,const char *directory,int (*progre
     if(remove(marker)){native_update_recover(directory,error,capacity);return fail(error,capacity,"Update commit failed; recovery attempted.");}
     for(int i=0;i<2;i++){char p[640];path(p,sizeof p,directory,names[i],".update-old");remove(p);}
     return 1;
+}
+
+static uint32_t cia_u32(const unsigned char *p){return (uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;}
+static uint64_t cia_u64(const unsigned char *p){return cia_u32(p)|(uint64_t)cia_u32(p+4)<<32;}
+int native_update_validate_cia(const char *file,char *error,size_t capacity) {
+    FILE *f=fopen(file,"rb");if(!f)return fail(error,capacity,"Cannot read the downloaded CIA.");
+    unsigned char h[32],ncch[0x200];int valid=0;
+    if(fseek(f,0,SEEK_END))goto end;
+    long length=ftell(f);rewind(f);
+    if(length<0 || (unsigned long)length>NATIVE_UPDATE_MAX_ZIP || fread(h,1,sizeof h,f)!=sizeof h)goto end;
+    uint32_t header=cia_u32(h),cert=cia_u32(h+8),ticket=cia_u32(h+12),tmd=cia_u32(h+16);
+    if(header!=0x2020 || h[4] || h[5] || h[6] || h[7] || !cert || !ticket || !tmd)goto end;
+    uint64_t at=((uint64_t)header+63)&~UINT64_C(63);
+    at+=((uint64_t)cert+63)&~UINT64_C(63);at+=((uint64_t)ticket+63)&~UINT64_C(63);at+=((uint64_t)tmd+63)&~UINT64_C(63);
+    uint64_t content=cia_u64(h+24);
+    if(at>(uint64_t)length || content<sizeof ncch || content>(uint64_t)length-at)goto end;
+    if(fseek(f,(long)at,SEEK_SET) || fread(ncch,1,sizeof ncch,f)!=sizeof ncch)goto end;
+    valid=!memcmp(ncch+0x100,"NCCH",4) && cia_u64(ncch+0x118)==CONKER_CIA_TITLE_ID;
+end:fclose(f);
+    return valid?1:fail(error,capacity,"Downloaded CIA is invalid or belongs to another title.");
 }

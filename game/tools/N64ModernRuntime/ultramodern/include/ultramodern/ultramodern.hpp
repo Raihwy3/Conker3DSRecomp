@@ -30,6 +30,19 @@ struct UltraThreadContext {
     // the host tick at which it last started running (0: not running).
     int32_t load_slot = -1;
     uint32_t load_since = 0;
+    // Save states (save_states.hpp): the thread's OSThread, the game library's context for it (its
+    // registers), and where it last waited (its native call stack, hashed, and the stack's depth).
+    PTR(OSThread) self = NULLPTR;
+    void* game_context = nullptr;
+    uint64_t wait_signature = 0;
+    uint32_t wait_depth = 0;
+    // How it waits (ultramodern::save_states::WaitKind) and the wait's own values, held in its native
+    // frames (the queue, the message or where it goes, the flags): part of the signature. A message
+    // queue wait notes them just before it waits.
+    uint32_t wait_kind = 0;
+    uint32_t wait_args[3] = {};
+    uint32_t noted_kind = 0;
+    uint32_t noted_args[3] = {};
 };
 
 namespace ultramodern {
