@@ -18,8 +18,6 @@ The launcher uses Conker’s ROM-derived font and pub-floor background for versi
 
 No ROM or extracted game artwork, music or textures is supplied in this source repository. The interface reads its game artwork from your ROM. The public launcher icon is an original monogram.
 
-See [Controls and bottom screen](docs/CONTROLS.md) for control presets and display options.
-
 ## Build and updates
 
 See [Building](docs/BUILDING.md) for the required tools and ROM-based build steps, and [Updates](docs/UPDATER.md) for release packaging and the optional startup updater.
