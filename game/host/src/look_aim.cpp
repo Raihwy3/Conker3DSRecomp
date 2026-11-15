@@ -880,14 +880,13 @@ extern "C" void conker_look_currents(uint8_t* rdram, recomp_context* ctx) {
     if (!frame.targets_moved) {
         return;
     }
-    write_float(rdram, state, current_yaw, read_float(rdram, state, current_yaw) + frame.direct_yaw);
-    // The clamp may have held the pitch target back; the current pitch mustn't pass it either.
-    const float target = read_float(rdram, targets, target_pitch);
-    const float clamped = target - frame.pitch_target_set;
-    float pitch = read_float(rdram, targets, current_pitch) + frame.direct_pitch;
-    if ((clamped < 0.0f && pitch > target) || (clamped > 0.0f && pitch < target)) {
-        pitch = target;
+    if (frame.direct_yaw != 0.0f) {
+        write_float(rdram, state, current_yaw, read_float(rdram, targets, target_yaw));
+        write_float(rdram, targets, yaw_velocity, 0.0f);
     }
-    write_float(rdram, targets, current_pitch, pitch);
+    if (frame.direct_pitch != 0.0f) {
+        write_float(rdram, targets, current_pitch, read_float(rdram, targets, target_pitch));
+        write_float(rdram, targets, pitch_velocity, 0.0f);
+    }
 #endif
 }

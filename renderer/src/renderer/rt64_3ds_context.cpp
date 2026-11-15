@@ -2923,7 +2923,8 @@ private:
             // The scissor apply_state sets covers the target.
             float x0 = geo_.screen_x((float)d.scissor[0]), x1 = geo_.screen_x((float)d.scissor[2]);
             const float y0 = geo_.screen_y((float)d.scissor[1]), y1 = geo_.screen_y((float)d.scissor[3]);
-            if (d.scissor[0] <= 0 && d.scissor[2] >= geo_.w) { x0 = 0.0f; x1 = 400.0f; }
+            if (d.scissor[0] <= 0) x0 = 0.0f;
+            if (d.scissor[2] >= geo_.w) x1 = 400.0f;
             if (lroundf(x0) > 0 || lroundf(x1) < 400 || lroundf(y0) > 0 || lroundf(y1) < 240) return -1;
             // So do its vertices, unshifted in either eye.
             float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f;
@@ -3302,7 +3303,8 @@ private:
         if (no_scissor) { x0 = 0; y0 = 0; x1 = 400; y1 = 240; }
         // The original game's own full-width scissor is stretched to the wide
         // screen: the patched projection already fills it.
-        if (d.scissor[0] <= 0 && d.scissor[2] >= geo_.w) { x0 = 0; x1 = 400; }
+        if (d.scissor[0] <= 0) x0 = 0;
+        if (d.scissor[2] >= geo_.w) x1 = 400;
         if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > 400) x1 = 400; if (y1 > 240) y1 = 240;
         // Mtx_OrthoTilt maps screen y = 0 to framebuffer x = 240 and the
         // screen's left edge to framebuffer y = 400: both axes run backwards.
@@ -4193,7 +4195,7 @@ public:
                 if (!td.valid || td.snapshot || td.frame || td.rtt >= 0) continue;
                 const uint16_t* pal = (td.fmt == 2 && td.tlut_index + 256 <= frame_.tlut.size()) ? &frame_.tlut[td.tlut_index] : nullptr;
                 const rt64_3ds::TexDesc* mips = (td.levels > 1 && td.mip_index + td.levels - 1 <= frame_.mips.size()) ? &frame_.mips[td.mip_index] : nullptr;
-                rt64_3ds::BoundTex b = textures_.get(td, pal, mips);
+                rt64_3ds::BoundTex b = textures_.get(td, pal, mips, d.kind != rt64_3ds::DrawRecord::TexRect);
                 // Every texture is in the cache before the replay starts and
                 // it binds from white_ at the frame's start: no address of a
                 // texture freed during the replay to tell apart.

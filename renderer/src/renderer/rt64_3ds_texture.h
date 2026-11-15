@@ -28,7 +28,7 @@ public:
     // Finds or decodes the texture a draw samples; `tlut` is the palette for
     // CI formats (256 entries) or nullptr; `mips` the sources of its levels
     // past the base (d.levels - 1 of them, FrameRecord::mips) or nullptr.
-    BoundTex get(const TexDesc& d, const uint16_t* tlut, const TexDesc* mips = nullptr);
+    BoundTex get(const TexDesc& d, const uint16_t* tlut, const TexDesc* mips = nullptr, bool allow_texpack = true);
     // A list's lookups start: from here to the next call, a texture asked
     // for again gets the first answer without reading RDRAM again (nothing
     // a list reads changes during its read: the game waits for "parsed",
@@ -89,7 +89,7 @@ private:
     // Decodes `d` (its texels read from `src`, laid out as RDRAM) into a new
     // entry under `key`, with its content and band hashes (8).
     BoundTex decode_into(uint64_t key, uint32_t content, const uint32_t* bands, const uint8_t* src, const TexDesc& d, const uint16_t* tlut,
-                         const TexDesc* mips, uint32_t levels, uint32_t rdram_addr);
+                         const TexDesc* mips, uint32_t levels, uint32_t rdram_addr, bool allow_texpack = true);
     bool defer_ = false;
     bool compact_ = false;
     bool mipmaps_ = true;

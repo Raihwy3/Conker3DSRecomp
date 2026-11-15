@@ -257,7 +257,7 @@ extern "C" void conker_camera_pass_sync(uint8_t* rdram, recomp_context* ctx) {
 extern "C" void conker_bubble_begin(uint8_t* rdram, recomp_context* ctx) {
     bubble_dl_start = 0;
     bubble_shift = 0;
-    if (!extended_enabled || widescreen_ratio() <= 1.0f) {
+    if (widescreen_ratio() <= 1.0f) {
         return;
     }
     const gpr sp = ctx->r29;
@@ -278,7 +278,7 @@ extern "C" void conker_bubble_end(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const gpr end = ctx->r2;
-    for (gpr cmd = start; cmd + 24 <= end && end - start <= 0x40; cmd += 8) {
+    for (gpr cmd = start; cmd + 24 <= end && end - start <= 0x200; cmd += 8) {
         const uint32_t w0 = (uint32_t)MEM_W(0, cmd);
         if ((w0 >> 24) != bubble_texrect || ((uint32_t)MEM_W(8, cmd) >> 24) != 0xE1 || ((uint32_t)MEM_W(16, cmd) >> 24) != 0xF1) {
             continue;

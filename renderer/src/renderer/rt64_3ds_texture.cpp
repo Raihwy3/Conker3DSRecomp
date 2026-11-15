@@ -219,6 +219,7 @@ struct TextureCache::Impl {
         uint32_t content, levels, rdram_addr;
         uint32_t bands[8];
         bool pal;
+        bool allow_texpack;
         TexDesc d;
         TexDesc mips[7];
         uint16_t tlut[256];
@@ -229,7 +230,7 @@ struct TextureCache::Impl {
 
 TextureCache::TextureCache(const uint8_t* rdram) : impl_(new Impl()), rdram_(rdram) {}
 
-BoundTex TextureCache::get(const TexDesc& d, const uint16_t* tlut, const TexDesc* mips) {
+BoundTex TextureCache::get(const TexDesc& d, const uint16_t* tlut, const TexDesc* mips, bool allow_texpack) {
     BoundTex b;
     if (!d.valid || d.width == 0 || d.height == 0) return b;
     const uint32_t levels = (mipmaps_ && mips != nullptr && d.levels > 1) ? d.levels : 1;
@@ -256,6 +257,7 @@ BoundTex TextureCache::get(const TexDesc& d, const uint16_t* tlut, const TexDesc
     dkey = mix(dkey, (uint64_t)d.tlut_hash | ((uint64_t)d.palette << 32) | ((uint64_t)d.nibble << 40) | ((uint64_t)d.block << 48) | ((uint64_t)d.tlut_mode << 56));
     if (d.block) dkey = mix(dkey, (uint64_t)d.dxt | ((uint64_t)d.load_word << 32));
     if (d.wrap_rows != 0) dkey = mix(dkey, d.wrap_rows);
+    if (!allow_texpack) dkey = mix(dkey, 0x7E5AC400ull);
     for (uint32_t k = 1; k < levels; k++) dkey = mix(dkey, (uint64_t)mips[k - 1].addr | ((uint64_t)mips[k - 1].load_word << 32) | ((uint64_t)k << 48));
     // Asked for already in this list (begin_list): the same answer. Else
     // the free slot it will go in (none after 8 taken ones: not kept).
@@ -353,7 +355,7 @@ BoundTex TextureCache::get(const TexDesc& d, const uint16_t* tlut, const TexDesc
     uint32_t bands[8];
     for (uint32_t k = 0; k < 8; k++) bands[k] = band_hash(k);
     if (!defer_) {
-        b = decode_into(key, h, bands, rdram_, d, tlut, mips, levels, d.addr);
+        b = decode_into(key, h, bands, rdram_, d, tlut, mips, levels, d.addr, allow_texpack);
         keep(b);
         return b;
     }
@@ -388,6 +390,7 @@ BoundTex TextureCache::get(const TexDesc& d, const uint16_t* tlut, const TexDesc
     copy(w.d);
     for (uint32_t k = 1; k < levels; k++) { w.mips[k - 1] = mips[k - 1]; copy(w.mips[k - 1]); }
     w.pal = tlut != nullptr;
+    w.allow_texpack = allow_texpack;
     if (w.pal) memcpy(w.tlut, tlut, sizeof(w.tlut));
     b.pending = (int32_t)(impl_->waiting.size() - 1);
     b.uscale = 1.0f / (float)pot(d.width);
@@ -412,7 +415,7 @@ size_t TextureCache::decode_pending(std::vector<BoundTex>& out) {
     out.resize(n);
     for (size_t i = 0; i < n; i++) {
         const Impl::Waiting& w = impl_->waiting[i];
-        out[i] = decode_into(w.key, w.content, w.bands, impl_->copies.data(), w.d, w.pal ? w.tlut : nullptr, w.levels > 1 ? w.mips : nullptr, w.levels, w.rdram_addr);
+        out[i] = decode_into(w.key, w.content, w.bands, impl_->copies.data(), w.d, w.pal ? w.tlut : nullptr, w.levels > 1 ? w.mips : nullptr, w.levels, w.rdram_addr, w.allow_texpack);
     }
     impl_->waiting.clear();
     impl_->copies.clear();
@@ -420,7 +423,7 @@ size_t TextureCache::decode_pending(std::vector<BoundTex>& out) {
 }
 
 BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* bands, const uint8_t* src, const TexDesc& d, const uint16_t* tlut,
-                                   const TexDesc* mips, uint32_t levels, uint32_t rdram_addr) {
+                                   const TexDesc* mips, uint32_t levels, uint32_t rdram_addr, bool allow_texpack) {
     BoundTex b;
     uint32_t potw = pot(d.width), poth = pot(d.height);
     bool wide = (d.fmt == 0 && d.siz == 3) || d.fmt == 3 || d.fmt == 4 || (d.fmt == 2 && d.tlut_mode == 3);
@@ -451,7 +454,7 @@ BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* ban
         swizzled_cache_bytes = 0;
     }
     TexPack& tp = get_tex_pack();
-    if (hd_on && tp.fp && !tp.entries.empty() && d.width >= 16 && d.height >= 16) {
+    if (allow_texpack && hd_on && tp.fp && !tp.entries.empty() && d.width >= 16 && d.height >= 16) {
         static std::unordered_map<uint64_t, int32_t> content_cache;
         uint32_t tlut_h = 0;
         if (tlut != nullptr) {
