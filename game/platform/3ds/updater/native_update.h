@@ -7,6 +7,7 @@
 #define NATIVE_TEXPACK_REPOSITORY "Raihwy3/Conker3DSRecomp-HD-Textures"
 #define NATIVE_TEXPACK_API "https://api.github.com/repos/" NATIVE_TEXPACK_REPOSITORY "/releases/latest"
 #define NATIVE_UPDATE_MAX_ZIP (32u*1024u*1024u)
+#define NATIVE_TEXPACK_MAX_BYTES (256u*1024u*1024u)
 struct NativeUpdateRelease {char tag[64],url[768],digest[65];size_t bytes;};
 int native_update_newer(const char *remote,const char *installed);
 /* CIA downloads are installed by FBI, never by replacing the running title. */

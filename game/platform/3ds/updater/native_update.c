@@ -56,13 +56,13 @@ static int string(struct Json *j,int i,char *out,size_t capacity) {
     }
     out[n]=0;return 1;
 }
-static int number(struct Json *j,int i,size_t *out) {
+static int number(struct Json *j,int i,size_t limit,size_t *out) {
     if(i<0 || j->tokens[i].type!=JSMN_PRIMITIVE)return 0;
     size_t n=0;
     for(int at=j->tokens[i].start;at<j->tokens[i].end;at++) {
-        int c=j->text[at]-'0';if(c<0 || c>9 || n>NATIVE_UPDATE_MAX_ZIP/10)return 0;n=n*10+(unsigned)c;
+        int c=j->text[at]-'0';if(c<0 || c>9 || n>limit/10)return 0;n=n*10+(unsigned)c;
     }
-    if(!n || n>NATIVE_UPDATE_MAX_ZIP)return 0;
+    if(!n || n>limit)return 0;
     *out=n;return 1;
 }
 static int parse_release_asset(const char *json,size_t length,const char *repo,const char *installed,int cia,int texpack,struct NativeUpdateRelease *out) {
@@ -91,7 +91,7 @@ static int parse_release_asset(const char *json,size_t length,const char *repo,c
         if(!safe)continue;
         if(!string(&j,field(&j,i,"browser_download_url"),r.url,sizeof r.url) ||
            !string(&j,field(&j,i,"digest"),hash,sizeof hash) || strncmp(hash,"sha256:",7) || strlen(hash)!=71 ||
-           !number(&j,field(&j,i,"size"),&r.bytes))continue;
+           !number(&j,field(&j,i,"size"),texpack?NATIVE_TEXPACK_MAX_BYTES:NATIVE_UPDATE_MAX_ZIP,&r.bytes))continue;
         int valid=1;for(int k=7;k<71;k++)if(!((hash[k]>='0' && hash[k]<='9') || (hash[k]>='a' && hash[k]<='f')))valid=0;
         if(!valid)continue;
         char prefix[256];snprintf(prefix,sizeof prefix,"https://github.com/%s/releases/download/%s/",repo,r.tag);
