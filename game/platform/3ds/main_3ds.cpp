@@ -30,6 +30,7 @@ extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 RspExitReason conker_audio_ucode(uint8_t* rdram, uint32_t ucode_addr);
 
 static std::atomic<bool> g_free_camera{true};
+static std::atomic<bool> g_achievement_popups{true};
 extern "C" bool conker_3ds_free_camera_enabled() {
     return g_free_camera.load();
 }
@@ -37,6 +38,10 @@ namespace { void refresh_achievement_labels(); }
 void conker::notices::show(const std::string& text, bool replace) {
     (void)replace;
     if (text.rfind("Achievement unlocked: ", 0) == 0) {
+        if (!g_achievement_popups.load()) {
+            refresh_achievement_labels();
+            return;
+        }
         recomp3ds::audio_play_chime();
     }
     recomp3ds::show_top_notice(text.c_str(), 6000);
@@ -92,6 +97,7 @@ const MenuDefault kDefaults[] = {
     { "log_level", 0 },
     { "free_camera", 1 },
     { "aim_swap_sticks", 0 },
+    { "achievement_popups", 1 },
 };
 
 int g_touch_mode = 1;
@@ -99,6 +105,8 @@ int g_face_camera_value=0;
 const char* const kFaceCameraNames[]={"Off","On"};
 void apply_face_camera(int v){recomp3ds::input_set_face_camera(v!=0);}
 int g_options_button = 1;
+int g_achievement_popups_value = 1;
+void apply_achievement_popups(int v) { g_achievement_popups.store(v != 0); }
 int g_animated_tails=1,g_health_display=1,g_money_display=1;
 int g_lives_display=1,g_chapter_display=1,g_gfx_text=0;
 const char* const kLivesDisplay[]={"Full","Icons only","Hidden"};
@@ -308,6 +316,8 @@ const MenuOption kOptions[] = {
     {"gfx_task_text","GFX task text",0,1,&g_gfx_text,kOffOn,screen_conker_set_gfx_text,PageGame},
     { "options_button", "Options button", 0, 1, &g_options_button, kOptionsButtonNames,
       screen_conker_set_options_button, PageGame },
+    { "achievement_popups", "Achievement popups", 0, 1, &g_achievement_popups_value, kOffOn,
+      apply_achievement_popups, PageGame },
     { "free_camera", "Camera", 0, 1, &g_free_camera_value, kFreeCameraNames,
       apply_free_camera, PageControls },
     { "touch_stick", "Touchscreen", 0, 1, &g_touch_mode, kTouchModes,

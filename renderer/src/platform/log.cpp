@@ -334,10 +334,10 @@ void recomp3ds::screen_conker_quit_prompt(bool show,bool restarts) {
 }
 
 void recomp3ds::show_top_notice(const char* text, uint32_t duration_ms) {
-    static uint16_t toast_buf[184 * 34];
+    static uint32_t toast_buf[184 * 34];
     int tw = 0, th = 0;
-    if (render_conker_toast_rgba4(text, toast_buf, tw, th)) {
-        rt64_3ds::show_top_notice_rgba(toast_buf, tw, th, duration_ms);
+    if (render_conker_toast_rgba8(text, toast_buf, tw, th)) {
+        rt64_3ds::show_top_notice_rgba8(toast_buf, tw, th, duration_ms);
     } else {
         rt64_3ds::show_top_notice(text, duration_ms);
     }

@@ -118,7 +118,7 @@ uint32_t now_ms() { return (uint32_t)(svcGetSystemTick() / (SYSCLOCK_ARM11 / 100
 
 struct TopToast {
     std::string text;
-    std::vector<uint16_t> rgba4;
+    std::vector<uint32_t> rgba8;
     int w = 0, h = 0;
     uint32_t duration_ms;
 };
@@ -129,26 +129,26 @@ bool g_toast_active = false;
 uint32_t g_toast_until_ms = 0;
 uint32_t g_toast_seq = 0;
 std::string g_toast_text;
-std::vector<uint16_t> g_toast_rgba4;
+std::vector<uint32_t> g_toast_rgba8;
 int g_toast_w = 0, g_toast_h = 0;
 
 void ensure_toast_lock() {
     if (!g_toast_lock_ok.exchange(true)) LightLock_Init(&g_toast_lock);
 }
 
-bool toast_snapshot(uint32_t& out_seq, std::string& out_text, std::vector<uint16_t>& out_rgba4, int& out_w, int& out_h) {
+bool toast_snapshot(uint32_t& out_seq, std::string& out_text, std::vector<uint32_t>& out_rgba8, int& out_w, int& out_h) {
     ensure_toast_lock();
     LightLock_Lock(&g_toast_lock);
     const uint32_t now = now_ms();
     if (g_toast_active && (int32_t)(now - g_toast_until_ms) >= 0) {
         g_toast_active = false;
         g_toast_text.clear();
-        g_toast_rgba4.clear();
+        g_toast_rgba8.clear();
         g_toast_w = g_toast_h = 0;
     }
     if (!g_toast_active && !g_toast_queue.empty()) {
         g_toast_text = std::move(g_toast_queue.front().text);
-        g_toast_rgba4 = std::move(g_toast_queue.front().rgba4);
+        g_toast_rgba8 = std::move(g_toast_queue.front().rgba8);
         g_toast_w = g_toast_queue.front().w;
         g_toast_h = g_toast_queue.front().h;
         const uint32_t dur = g_toast_queue.front().duration_ms;
@@ -161,7 +161,7 @@ bool toast_snapshot(uint32_t& out_seq, std::string& out_text, std::vector<uint16
     if (active) {
         out_seq = g_toast_seq;
         out_text = g_toast_text;
-        out_rgba4 = g_toast_rgba4;
+        out_rgba8 = g_toast_rgba8;
         out_w = g_toast_w;
         out_h = g_toast_h;
     }
@@ -1383,10 +1383,10 @@ private:
             if (post_ok_) { C3D_TexSetFilter(&post_tex_, GPU_LINEAR, GPU_LINEAR); C3D_TexSetWrap(&post_tex_, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE); }
         }
         if (rt64_3ds::render_desc().hud_on_bottom_supported) init_bottom();
-        toast_tex_ok_ = C3D_TexInit(&toast_tex_, 256, 64, GPU_RGBA4);
+        toast_tex_ok_ = C3D_TexInit(&toast_tex_, 256, 64, GPU_RGBA8);
         if (toast_tex_ok_) {
-            memset(toast_tex_.data, 0, 256 * 64 * 2);
-            flush_dcache(toast_tex_.data, 256 * 64 * 2);
+            memset(toast_tex_.data, 0, 256 * 64 * 4);
+            flush_dcache(toast_tex_.data, 256 * 64 * 4);
             C3D_TexSetFilter(&toast_tex_, GPU_NEAREST, GPU_NEAREST);
         }
         fprintf(stderr, "rt64-3ds: eye targets: %s colour, %s depth (VRAM left %u KB)\n", color16_ ? "RGB565" : "RGBA8",
@@ -1775,9 +1775,9 @@ private:
         if (split) fc_frames_++;
         uint32_t toast_seq = 0;
         std::string toast_text;
-        std::vector<uint16_t> toast_rgba4;
+        std::vector<uint32_t> toast_rgba8;
         int toast_w = 0, toast_h = 0;
-        const bool toast_on = !offscreen_frame && toast_tex_ok_ && n + 54 <= kVboVerts && toast_snapshot(toast_seq, toast_text, toast_rgba4, toast_w, toast_h);
+        const bool toast_on = !offscreen_frame && toast_tex_ok_ && n + 54 <= kVboVerts && toast_snapshot(toast_seq, toast_text, toast_rgba8, toast_w, toast_h);
         // The right eye from the left eye's commands: the left eye's draws
         // are a command list of their own (they set all their state
         // themselves, from caches emptied at its start), queued a second time
@@ -1984,7 +1984,7 @@ private:
         }
         if (ghost && sfd.on && !offscreen_frame) ghost_pass((uint32_t)n);
         if (post) post_pass((uint32_t)n + 12, cur_eye_[pass]);
-        if (toast_on) draw_toast(cur_eye_[pass], vb + n + 48, (uint32_t)(n + 48), toast_seq, toast_text, toast_rgba4, toast_w, toast_h);
+        if (toast_on) draw_toast(cur_eye_[pass], vb + n + 48, (uint32_t)(n + 48), toast_seq, toast_text, toast_rgba8, toast_w, toast_h);
         }   // eye passes
         // dbg_frame_trace_from / _count: the replay's decisions, a line a
         // frame, for frames first..first+count.
@@ -4629,27 +4629,34 @@ public:
         memcpy(out, kFont[idx], 5);
     }
     int toast_w_ = 220, toast_h_ = 36;
-    void update_toast_tex(const std::string& text, const std::vector<uint16_t>& rgba4, int w, int h) {
+    void update_toast_tex(const std::string& text, const std::vector<uint32_t>& rgba8, int w, int h) {
         if (!toast_tex_ok_) return;
         constexpr int kTexW = 256, kTexH = 64, kTilesX = kTexW / 8;
-        uint16_t* dst = (uint16_t*)toast_tex_.data;
-        memset(dst, 0, kTexW * kTexH * 2);
-        auto put_px = [&](int x, int y, uint16_t c) {
+        uint32_t* dst = (uint32_t*)toast_tex_.data;
+        memset(dst, 0, kTexW * kTexH * 4);
+        auto put_px8 = [&](int x, int y, uint32_t c) {
             if ((unsigned)x >= (unsigned)kTexW || (unsigned)y >= (unsigned)kTexH) return;
             const int yd = (kTexH - 1) - y;
             const unsigned mx = (x & 1) | ((x & 2) << 1) | ((x & 4) << 2);
             const unsigned my = ((yd & 1) << 1) | ((yd & 2) << 2) | ((yd & 4) << 3);
             dst[((yd >> 3) * kTilesX + (x >> 3)) * 64 + (my | mx)] = c;
         };
-        if (!rgba4.empty() && w > 0 && h > 0 && w <= kTexW && h <= kTexH && (int)rgba4.size() >= w * h) {
+        auto put_px = [&](int x, int y, uint16_t c) {
+            const uint32_t r = ((c >> 12) & 0xF) * 17u;
+            const uint32_t g = ((c >> 8) & 0xF) * 17u;
+            const uint32_t b = ((c >> 4) & 0xF) * 17u;
+            const uint32_t a = (c & 0xF) * 17u;
+            put_px8(x, y, (r << 24) | (g << 16) | (b << 8) | a);
+        };
+        if (!rgba8.empty() && w > 0 && h > 0 && w <= kTexW && h <= kTexH && (int)rgba8.size() >= w * h) {
             toast_w_ = w;
             toast_h_ = h;
             for (int y = 0; y < h; y++) {
                 for (int x = 0; x < w; x++) {
-                    put_px(x, y, rgba4[y * w + x]);
+                    put_px8(x, y, rgba8[y * w + x]);
                 }
             }
-            flush_dcache(dst, kTexW * kTexH * 2);
+            flush_dcache(dst, kTexW * kTexH * 4);
             return;
         }
         toast_w_ = 220;
@@ -4657,10 +4664,13 @@ public:
         constexpr int kW = 220, kH = 36;
         const char* ach_prefix = "Achievement unlocked: ";
         const bool is_ach = strncmp(text.c_str(), ach_prefix, 22) == 0;
+        const char* ach_title = text.c_str() + 22;
+        const bool is_bronze = is_ach && strcmp(ach_title, "Bad Fur Day") == 0;
+        const bool is_gold = is_ach && (strcmp(ach_title, "What a Day") == 0 || strcmp(ach_title, "Every Chapter") == 0);
         const uint16_t bg = 0x211D;
         const uint16_t bg_top = 0x321D;
-        const uint16_t border = is_ach ? 0xFD4E : 0xA83D;
-        const uint16_t gold = 0xFD4F;
+        const uint16_t accent = is_bronze ? 0xC73F : (is_gold ? 0xFD4F : 0xDDEF);
+        const uint16_t border = is_ach ? (is_bronze ? 0xC73E : (is_gold ? 0xFD4E : 0xDDEE)) : 0xA83D;
         for (int y = 0; y < kH; y++) {
             for (int x = 0; x < kW; x++) {
                 const bool edge = (x == 0 || y == 0 || x == kW - 1 || y == kH - 1);
@@ -4684,7 +4694,7 @@ public:
             };
             for (int ty = 0; ty < 12; ty++) {
                 for (int tx = 0; tx < 12; tx++) {
-                    if (kTrophy[ty][tx] == 'G') put_px(8 + tx, 12 + ty, gold);
+                    if (kTrophy[ty][tx] == 'G') put_px(8 + tx, 12 + ty, accent);
                 }
             }
         }
@@ -4701,18 +4711,18 @@ public:
             }
         };
         if (is_ach) {
-            draw_str(26, 7, "ACHIEVEMENT UNLOCKED", gold);
+            draw_str(26, 7, "ACHIEVEMENT UNLOCKED", accent);
             draw_str(26, 20, text.c_str() + 22, 0xFFFF);
         } else {
             draw_str(8, 14, text.c_str(), 0xFFFF);
         }
-        flush_dcache(dst, kTexW * kTexH * 2);
+        flush_dcache(dst, kTexW * kTexH * 4);
     }
     void draw_toast(C3D_RenderTarget* target, GpuVertex* q, uint32_t first, uint32_t seq, const std::string& text,
-                    const std::vector<uint16_t>& rgba4, int tw, int th) {
+                    const std::vector<uint32_t>& rgba8, int tw, int th) {
         if (target == nullptr) return;
         if (seq != toast_drawn_seq_) {
-            update_toast_tex(text, rgba4, tw, th);
+            update_toast_tex(text, rgba8, tw, th);
             toast_drawn_seq_ = seq;
             fprintf(stderr, "rt64-3ds: draw_toast seq=%u '%s' geo=%dx%d x0=%d (%dx%d)\n", seq, text.c_str(), geo_.w, geo_.h, geo_.x0, toast_w_, toast_h_);
         }
@@ -5123,14 +5133,14 @@ void rt64_3ds::show_top_notice(const char* text, uint32_t duration_ms) {
     LightLock_Unlock(&g_toast_lock);
 }
 
-void rt64_3ds::show_top_notice_rgba(const uint16_t* rgba4, int w, int h, uint32_t duration_ms) {
-    if (!rgba4 || w <= 0 || h <= 0) return;
+void rt64_3ds::show_top_notice_rgba8(const uint32_t* rgba8, int w, int h, uint32_t duration_ms) {
+    if (!rgba8 || w <= 0 || h <= 0) return;
     ensure_toast_lock();
     LightLock_Lock(&g_toast_lock);
     TopToast item;
     item.w = w;
     item.h = h;
-    item.rgba4.assign(rgba4, rgba4 + w * h);
+    item.rgba8.assign(rgba8, rgba8 + w * h);
     item.duration_ms = duration_ms ? duration_ms : 6000;
     g_toast_queue.push_back(std::move(item));
     LightLock_Unlock(&g_toast_lock);
