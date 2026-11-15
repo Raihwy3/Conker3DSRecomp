@@ -10,6 +10,7 @@ set(RT64_3DS_NMR_DIR "${CONKER_ROOT}/tools/N64ModernRuntime")
 set(RT64_3DS_HEAP_START 0x80B00000)
 set(RT64_3DS_LINEAR_HEAP_MB 16)
 set(RT64_3DS_STATIC_MODS OFF)
+set(RT64_3DS_GU_NATIVE ON)
 
 add_subdirectory("${RT64_3DS_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/rt64-3ds")
 
@@ -28,7 +29,7 @@ target_include_directories(RecompiledFuncs PRIVATE
     "${RT64_3DS_NMR_DIR}/librecomp/include"
 )
 target_compile_options(RecompiledFuncs PRIVATE
-    -O2 -fno-strict-aliasing -w
+    -O2 -fno-math-errno -fno-strict-aliasing -w
     -Wno-implicit-function-declaration -Wno-error=implicit-function-declaration
     -include "${CMAKE_CURRENT_LIST_DIR}/conker_host_protos.h"
 )
@@ -72,7 +73,7 @@ target_include_directories(ConkerRecomp PRIVATE
     "${RT64_3DS_NMR_DIR}/librecomp/include"
 )
 target_compile_definitions(ConkerRecomp PRIVATE CONKER_3DS)
-target_compile_options(ConkerRecomp PRIVATE -O2 -Wno-unused-parameter)
+target_compile_options(ConkerRecomp PRIVATE -O3 -fno-math-errno -Wno-unused-parameter)
 set_source_files_properties("${CONKER_ROOT}/RecompiledFuncs/rsp/audio_ucode.cpp"
     PROPERTIES COMPILE_OPTIONS "-O3;-fno-strict-aliasing;-w")
 

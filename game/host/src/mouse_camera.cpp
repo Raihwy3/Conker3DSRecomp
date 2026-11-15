@@ -61,11 +61,19 @@
 #include "conker.hpp"
 #if defined(__arm__) && !defined(CONKER_RT64)
 #include "recomp3ds_internal.h"
+#include "rt64_3ds.h"
 extern "C" bool conker_3ds_free_camera_enabled();
+extern "C" bool conker_3ds_first_person_enabled();
+extern "C" bool conker_3ds_shoulder_swap_held();
 #endif
 
 // The game's floor height under a point (game_13BB20.c), called by floor_below.
 extern "C" void func_1510E8BC(uint8_t* rdram, recomp_context* ctx);
+// The game's camera wall/floor collision (func_1512BB10), also used to probe shoulder clearance.
+extern "C" void func_1512BB10(uint8_t* rdram, recomp_context* ctx);
+// Angle helpers (func_1512523C, func_15125330) used to sync skybox pitch/yaw to the OTS view.
+extern "C" void func_1512523C(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15125330(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     // Degrees per pixel of mouse movement at 100% sensitivity.
@@ -199,6 +207,29 @@ namespace {
         int wall_frames = 0;            // frames left to keep to it
         bool placed = false;            // the orbit placed the eye this frame, at placed_eye
         float placed_eye[3] = {};
+        float jump_tilt = 0.0f;
+        float jump_lift = 0.0f;
+        float jump_pull = 0.0f;
+        float melee_pull = 0.0f;
+        int melee_hold = 0;
+        bool has_ots_pivot = false;
+        float ots_pivot[3] = {};
+        bool ots_left_shoulder = false;
+        bool prev_swap_held = false;
+        float ots_shoulder_x = 34.0f;
+        float ots_shoulder_up = 24.0f;
+        bool ots_probing = false;
+        bool ots_probe_has_sample = false;
+        int ots_probe_cooldown = 0;
+        float ots_clear_side = 34.0f;
+        float ots_clear_up = 24.0f;
+        float ots_probe_x = 0.0f, ots_probe_y = 0.0f, ots_probe_z = 0.0f;
+        float ots_probe_yaw = 0.0f, ots_probe_up = 24.0f;
+        bool ots_probe_left = false;
+        float smooth_stick_yaw = 0.0f;
+        float smooth_stick_pitch = 0.0f;
+        bool has_cstick_time = false;
+        std::chrono::steady_clock::time_point last_cstick_time;
         std::chrono::steady_clock::time_point stick_time;
     } orbit;
 
@@ -272,6 +303,32 @@ namespace {
 #endif
     }
 
+    bool first_person_setting() {
+#if defined(__arm__) && !defined(CONKER_RT64)
+        return conker_3ds_first_person_enabled();
+#else
+        return false;
+#endif
+    }
+
+    bool cutscene_or_intro_now(uint8_t* rdram) {
+        // Active cutscene slot (D_800C35EA[0..1], same as cutscene_aspect.cpp & model_detail.cpp)
+        // plus pre-play logos (0x25), chainsaw opening (0x21), and pub startup/menu (0x1D).
+        if (MEM_BU(0, (gpr)(int32_t)0x800C35EA) != 0 || MEM_BU(1, (gpr)(int32_t)0x800C35EA) != 0) {
+            return true;
+        }
+        const uint32_t scene = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0);
+        return scene == 0x25 || scene == 0x21 || scene == 0x1D;
+    }
+
+    bool shoulder_swap_held() {
+#if defined(__arm__) && !defined(CONKER_RT64)
+        return conker_3ds_shoulder_swap_held();
+#else
+        return false;
+#endif
+    }
+
     // The orbit's turn (yaw) and tilt (pitch) from player 1's right stick since the last read, in
     // radians: its tilt past the deadzone, at Camera: Turning Speed and Invert Turning, for the time
     // since the last read. Right turns the way the mouse moving right does; up tilts to look up.
@@ -306,11 +363,24 @@ namespace {
         recomp3ds::input_get_right_stick(&x,&y);
         // The platform already applies a radial deadzone. Up is positive
         // here; the PC camera takes SDL's positive-down pitch convention.
-        const float strength=std::min(1.0f,std::hypot(x,y));
+        const float raw_mag = std::min(1.0f, std::hypot(x, y));
+        const bool ots = first_person_setting();
+        const float strength = ots
+            ? (raw_mag > 0.0f ? std::pow(raw_mag, 0.65f) : 0.0f)
+            : raw_mag;
         bool ix=false,iy=false;conker::look_aim::free_camera_invert(ix,iy);
         const float speed=conker::look_aim::camera_turn_speed();
-        yaw=x*strength*stick_yaw_speed*seconds*degrees_to_radians*speed*(ix?-1:1);
-        pitch=-y*strength*stick_pitch_speed*seconds*degrees_to_radians*speed*(iy?-1:1);
+        float vx = x * strength * stick_yaw_speed * degrees_to_radians * speed * (ix ? -1.0f : 1.0f);
+        float vy = -y * strength * stick_pitch_speed * degrees_to_radians * speed * (iy ? -1.0f : 1.0f);
+        if (ots) {
+            const float alpha = (raw_mag > 0.01f) ? 0.45f : 0.60f;
+            orbit.smooth_stick_yaw += (vx - orbit.smooth_stick_yaw) * alpha;
+            orbit.smooth_stick_pitch += (vy - orbit.smooth_stick_pitch) * alpha;
+            vx = (raw_mag == 0.0f && std::fabs(orbit.smooth_stick_yaw) < 1e-4f) ? 0.0f : orbit.smooth_stick_yaw;
+            vy = (raw_mag == 0.0f && std::fabs(orbit.smooth_stick_pitch) < 1e-4f) ? 0.0f : orbit.smooth_stick_pitch;
+        }
+        yaw = vx * seconds;
+        pitch = vy * seconds;
 #endif
     }
 }
@@ -321,6 +391,10 @@ bool conker::mouse_camera::stick_turns_camera() {
 
 bool conker::mouse_camera::normal_camera() {
     return was_normal_camera;
+}
+
+bool conker::mouse_camera::first_person_active() {
+    return first_person_setting() && orbit.engaged;
 }
 
 namespace {
@@ -371,20 +445,37 @@ extern "C" void conker_mouse_camera_look_mode(uint8_t* rdram, recomp_context* ct
 // only the first time, and the second places the same eye. The C-buttons' turning has
 // placed the eye the game wants by now (+0x2F8), turned from last frame's (+0x304).
 extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx) {
+    if (orbit.ots_probing) {
+        return;
+    }
     const gpr camera = ctx->r4;
     if ((uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
         return;
     }
     const bool use_mouse = mouse_turns_camera();
     const bool use_stick = stick_turns_camera_setting();
-    // Nor in the bank's slow motion leaps, where the mouse moves the crosshair instead (issue #85, look_aim.cpp).
-    if (!orbit.follow_camera_ran || orbit.look_mode_ran || conker::look_aim::leaping_now() || (!use_mouse && !use_stick)) {
+    const bool fp = first_person_setting();
+    // Nor in the bank's slow motion leaps, where the mouse moves the crosshair instead (issue #85, look_aim.cpp),
+    // nor during cutscenes or the startup pub/intro sequence when Over shoulder is enabled.
+    if (!orbit.follow_camera_ran || orbit.look_mode_ran || conker::look_aim::leaping_now() ||
+        (fp && cutscene_or_intro_now(rdram)) || (!use_mouse && !use_stick)) {
         orbit.engaged = false;
         orbit.aim = 0.0f;
         orbit.resting = false;
         orbit.has_last = false;
         orbit.smooth_frames = 0;
         orbit.has_stick_time = false;
+        orbit.jump_tilt = 0.0f;
+        orbit.jump_lift = 0.0f;
+        orbit.jump_pull = 0.0f;
+        orbit.melee_pull = 0.0f;
+        orbit.melee_hold = 0;
+        orbit.has_ots_pivot = false;
+        orbit.ots_shoulder_x = orbit.ots_left_shoulder ? -34.0f : 34.0f;
+        orbit.ots_shoulder_up = 24.0f;
+        orbit.smooth_stick_yaw = 0.0f;
+        orbit.smooth_stick_pitch = 0.0f;
+        orbit.has_cstick_time = false;
         wheel_notches = 0;
         return;
     }
@@ -408,9 +499,11 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         orbit.moved = mouse_x != 0.0f || mouse_y != 0.0f || notches != 0 || stick_yaw != 0.0f || stick_pitch != 0.0f;
         orbit.wheel_zoomed |= notches != 0;
     }
-    // The C-buttons alone turn the game's camera.
-    if (orbit.c_turning && !orbit.moved) {
+    // The C-buttons alone turn the game's camera (unless in Over shoulder).
+    if (!fp && orbit.c_turning && !orbit.moved) {
         orbit.engaged = false;
+        orbit.jump_tilt = 0.0f;
+        orbit.has_cstick_time = false;
         orbit.aim = 0.0f;
         return;
     }
@@ -425,7 +518,7 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
     const float wanted_distance = std::sqrt(horizontal * horizontal + height * height);
 
     if (!orbit.engaged) {
-        if (!orbit.moved) {
+        if (!orbit.moved && !fp) {
             return;
         }
         // Take over from where the game's camera was drawn.
@@ -438,15 +531,121 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         orbit.wall = 0.0f;
         orbit.wall_frames = 0;
         orbit.yaw = std::atan2(ez, ex);
-        orbit.pitch = std::atan2(ey, std::sqrt(ex * ex + ez * ez));
+        orbit.pitch = fp ? (8.0f * degrees_to_radians) : std::atan2(ey, std::sqrt(ex * ex + ez * ez));
         if (orbit.wanted == 0.0f) {
             orbit.wanted = wanted_distance;
         }
         orbit.engaged = true;
     }
+
     // Until the scroll wheel sets a distance, the orbit keeps the game's, so C-Down zooms it.
-    if (!orbit.wheel_zoomed) {
-        orbit.wanted = wanted_distance;
+    if (fp) {
+        if (first) {
+            const bool swap_held = shoulder_swap_held();
+            if (swap_held && !orbit.prev_swap_held) {
+                orbit.ots_left_shoulder = !orbit.ots_left_shoulder;
+            }
+            orbit.prev_swap_held = swap_held;
+
+            const auto now = std::chrono::steady_clock::now();
+            if (!orbit.has_cstick_time || stick_yaw != 0.0f || stick_pitch != 0.0f || mouse_x != 0.0f || mouse_y != 0.0f) {
+                orbit.last_cstick_time = now;
+                orbit.has_cstick_time = true;
+            }
+            else if (std::chrono::duration<float>(now - orbit.last_cstick_time).count() > 5.0f) {
+                const uint32_t pad_addr = (uint32_t)MEM_W(0x36C, camera);
+                if (pad_addr >= 0x80000000u && pad_addr <= 0x807FFFF0u) {
+                    const gpr pad = (gpr)(int32_t)pad_addr;
+                    const float lx = std::clamp((float)MEM_B(2, pad) / 80.0f, -1.0f, 1.0f);
+                    const float ly = std::clamp((float)MEM_B(3, pad) / 80.0f, -1.0f, 1.0f);
+                    if (std::fabs(lx) > 0.15f && ly >= -0.35f) {
+                        orbit.yaw += lx * (95.0f * degrees_to_radians) * (1.0f / 30.0f);
+                    }
+                }
+            }
+            float target_jump_tilt = 0.0f;
+            float target_jump_lift = 0.0f;
+            float target_jump_pull = 0.0f;
+            float jump_cam_lift = 0.0f;
+            bool melee_active = false;
+            const uint32_t char_addr = (uint32_t)MEM_W(0x3D0, camera);
+            if (char_addr >= 0x80000000u && char_addr <= 0x807FFFC0u) {
+                const gpr character = (gpr)(int32_t)char_addr;
+                const float char_x = read_float(rdram, character, 0x14);
+                const float char_y = read_float(rdram, character, 0x18);
+                const float char_z = read_float(rdram, character, 0x1C);
+                const float char_floor = floor_below(rdram, ctx, camera, char_x, char_y + 10.0f, char_z);
+                const float air_floor = (char_floor > no_floor && char_y - char_floor > 5.0f)
+                    ? (char_y - char_floor - 5.0f)
+                    : 0.0f;
+                const float air_cam = (char_y - cy > 5.0f) ? (char_y - cy - 5.0f) : 0.0f;
+                const float air = std::max(air_floor, air_cam);
+                if (air > 0.0f) {
+                    target_jump_tilt = std::clamp(air * 0.0020f, 0.0f, 7.5f * degrees_to_radians);
+                    target_jump_lift = std::clamp(air * 0.75f, 0.0f, 44.0f);
+                    target_jump_pull = std::clamp(air * 0.40f, 0.0f, 32.0f);
+                }
+                if (char_y > cy + 2.0f) {
+                    jump_cam_lift = std::clamp((char_y - cy - 2.0f) * 0.72f, 0.0f, 38.0f);
+                }
+                // Conker's current action/animation ID (set by func_1505E0C4 at character+0x84).
+                // B-button melee/pan swings trigger states 0x33, 0x46, 0x1DC, 0x354, 0x355.
+                const uint16_t action_state = MEM_HU(0x84, character);
+                melee_active = action_state == 0x33 || action_state == 0x46 || action_state == 0x1DC ||
+                    action_state == 0x354 || action_state == 0x355;
+            }
+            orbit.jump_tilt += (target_jump_tilt - orbit.jump_tilt) * (target_jump_tilt > orbit.jump_tilt ? 0.18f : 0.10f);
+            orbit.jump_lift += (target_jump_lift - orbit.jump_lift) * (target_jump_lift > orbit.jump_lift ? 0.24f : 0.12f);
+            orbit.jump_pull += (target_jump_pull - orbit.jump_pull) * (target_jump_pull > orbit.jump_pull ? 0.20f : 0.11f);
+            if (melee_active) {
+                orbit.melee_hold = 14;
+            }
+            else if (orbit.melee_hold > 0) {
+                orbit.melee_hold--;
+            }
+            const float target_melee_pull = (orbit.melee_hold > 0) ? 48.0f : 0.0f;
+            orbit.melee_pull += (target_melee_pull - orbit.melee_pull) * (target_melee_pull > orbit.melee_pull ? 0.28f : 0.10f);
+
+            const float target_cy = cy + jump_cam_lift;
+            const float jump_dist = orbit.has_ots_pivot
+                ? std::hypot(cx - orbit.ots_pivot[0], std::hypot(target_cy - orbit.ots_pivot[1], cz - orbit.ots_pivot[2]))
+                : 1000.0f;
+            if (!orbit.has_ots_pivot || jump_dist > 90.0f) {
+                orbit.ots_pivot[0] = cx;
+                orbit.ots_pivot[1] = target_cy;
+                orbit.ots_pivot[2] = cz;
+                orbit.has_ots_pivot = true;
+            }
+            else {
+                orbit.ots_pivot[0] += (cx - orbit.ots_pivot[0]) * 0.50f;
+                orbit.ots_pivot[1] += (target_cy - orbit.ots_pivot[1]) * (target_cy > orbit.ots_pivot[1] ? 0.42f : 0.28f);
+                orbit.ots_pivot[2] += (cz - orbit.ots_pivot[2]) * 0.50f;
+                orbit.ots_pivot[0] = std::clamp(orbit.ots_pivot[0], cx - 16.0f, cx + 16.0f);
+                orbit.ots_pivot[1] = std::clamp(orbit.ots_pivot[1], target_cy - 18.0f, target_cy + 18.0f);
+                orbit.ots_pivot[2] = std::clamp(orbit.ots_pivot[2], cz - 16.0f, cz + 16.0f);
+            }
+        }
+        // Pitch-based craning: tuck closer when looking up, slightly tighter when looking down.
+        const float pitch_dist = (orbit.pitch < 0.0f)
+            ? (162.0f + std::max(orbit.pitch, -1.0f) * 45.0f)
+            : (162.0f - std::min(orbit.pitch, 1.0f) * 16.0f);
+        orbit.wanted = pitch_dist + orbit.jump_pull + orbit.melee_pull;
+    }
+    else {
+        orbit.jump_tilt = 0.0f;
+        orbit.jump_lift = 0.0f;
+        orbit.jump_pull = 0.0f;
+        orbit.melee_pull = 0.0f;
+        orbit.melee_hold = 0;
+        orbit.has_ots_pivot = false;
+        orbit.ots_shoulder_x = orbit.ots_left_shoulder ? -34.0f : 34.0f;
+        orbit.ots_shoulder_up = 24.0f;
+        orbit.smooth_stick_yaw = 0.0f;
+        orbit.smooth_stick_pitch = 0.0f;
+        orbit.has_cstick_time = false;
+        if (!orbit.wheel_zoomed) {
+            orbit.wanted = wanted_distance;
+        }
     }
 
     // The controller's nearest and farthest distances from the look-at point.
@@ -459,7 +658,9 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         nearest = (i == 0) ? d : std::min(nearest, d);
         farthest = (i == 0) ? d : std::max(farthest, d);
     }
-    orbit.wanted = std::clamp(orbit.wanted * std::pow(zoom_step, (float)-notches), nearest, farthest);
+    if (!fp) {
+        orbit.wanted = std::clamp(orbit.wanted * std::pow(zoom_step, (float)-notches), nearest, farthest);
+    }
     orbit.yaw += mouse_x * degrees_per_pixel * degrees_to_radians + stick_yaw;
     if (first && orbit.c_turning) {
         // The C-buttons' turn this frame: as far as the game turned its own eye.
@@ -471,8 +672,9 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
     // conker_mouse_camera_aim), as Ocarina of Time's free camera does: from close to a tower its top
     // was out of view, as the eye always looked at the look-at point. Tilting back down takes the aim
     // off first, then the eye comes back up.
+    const float active_body_clearance = fp ? 72.0f : body_clearance;
     const float drop = std::max(look_height * (1.0f - ground_clearance), 0.0f);
-    const float lowest_pitch = std::max(min_pitch, -std::atan2(drop, body_clearance));
+    const float lowest_pitch = std::max(min_pitch, -std::atan2(drop, active_body_clearance));
     const float tilt = orbit.pitch - orbit.aim + mouse_y * degrees_per_pixel * degrees_to_radians + stick_pitch;
     if (tilt >= lowest_pitch) {
         orbit.pitch = std::min(tilt, max_pitch);
@@ -523,7 +725,7 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         // Looking up, in close enough that the eye stays above Conker's feet, but not into him
         // (issue #70). Eased too: far out, a small tilt here moves the eye a long way in.
         if (dy < 0.0f && -dy * goal > drop) {
-            goal = std::min(goal, std::max(drop / -dy, body_clearance / std::cos(orbit.pitch)));
+            goal = std::min(goal, std::max(drop / -dy, active_body_clearance / std::cos(orbit.pitch)));
         }
         if (orbit.shown <= 0.0f) {
             orbit.shown = goal;
@@ -531,7 +733,10 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         orbit.shown += (goal < orbit.shown) ? (goal - orbit.shown) * tight_ease : std::min((goal - orbit.shown) * tight_release, release_step);
     }
     const float zoomed = orbit.shown;
-    float target[3] = { cx + dx * zoomed, cy + dy * zoomed, cz + dz * zoomed };
+    const float px = (fp && orbit.has_ots_pivot) ? orbit.ots_pivot[0] : cx;
+    const float py = (fp && orbit.has_ots_pivot) ? orbit.ots_pivot[1] : cy;
+    const float pz = (fp && orbit.has_ots_pivot) ? orbit.ots_pivot[2] : cz;
+    float target[3] = { px + dx * zoomed, py + dy * zoomed, pz + dz * zoomed };
     // Above the floor under it (floor_clearance), looked for down from the look-at point. func_1510E8BC can
     // answer with a surface above where it looked from: with a wall behind Conker the eye is behind or in it,
     // and it gives the wall's top. That isn't ground under the camera: going by it lifted the eye high up the
@@ -571,10 +776,24 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
     if ((uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
         return;
     }
-    if (!orbit.follow_camera_ran || orbit.look_mode_ran) {
+    if (!orbit.follow_camera_ran || orbit.look_mode_ran || (first_person_setting() && cutscene_or_intro_now(rdram))) {
         orbit.engaged = false;
+        orbit.jump_tilt = 0.0f;
+        orbit.jump_lift = 0.0f;
+        orbit.jump_pull = 0.0f;
+        orbit.melee_pull = 0.0f;
+        orbit.melee_hold = 0;
+        orbit.has_ots_pivot = false;
+        orbit.ots_shoulder_x = orbit.ots_left_shoulder ? -34.0f : 34.0f;
+        orbit.ots_shoulder_up = 24.0f;
+        orbit.smooth_stick_yaw = 0.0f;
+        orbit.smooth_stick_pitch = 0.0f;
+        orbit.has_cstick_time = false;
         orbit.aim = 0.0f;
     }
+#if defined(__arm__) && !defined(CONKER_RT64)
+    rt64_3ds::set_first_person_head_cull(false);
+#endif
     // The game's collision lifted the orbit's eye off the floor (to game_floor_lift above it): to floor_clearance
     // above it instead, unless the orbit placed it higher than that. It's the floor's lift when the eye was lifted
     // straight up, or to just game_floor_lift above the floor found under it (a wall may move it across as well).
@@ -606,6 +825,85 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
                 write_float(rdram, camera, 0x2F8 + i * 4, was + (now - was) * contact_smooth);
             }
         }
+        if (first_person_setting()) {
+            const float cx_now = read_float(rdram, camera, 0x2F8);
+            const float cy_now = read_float(rdram, camera, 0x2FC);
+            const float cz_now = read_float(rdram, camera, 0x300);
+            const float desired_up = 24.0f + orbit.jump_lift;
+            const float dpos = std::fabs(cx_now - orbit.ots_probe_x) + std::fabs(cy_now - orbit.ots_probe_y) + std::fabs(cz_now - orbit.ots_probe_z);
+            const float dyaw = std::fabs(orbit.yaw - orbit.ots_probe_yaw);
+            const bool urgent = !orbit.ots_probe_has_sample || (orbit.ots_left_shoulder != orbit.ots_probe_left) || dpos > 12.0f || dyaw > 0.12f;
+            const bool moved = dpos > 0.5f || dyaw > 0.005f || std::fabs(desired_up - orbit.ots_probe_up) > 0.5f;
+            if (urgent || (moved && orbit.ots_probe_cooldown <= 0)) {
+                const float rx = std::sin(orbit.yaw);
+                const float rz = -std::cos(orbit.yaw);
+                const float dir_sign = orbit.ots_left_shoulder ? -1.0f : 1.0f;
+                const int32_t save_target[3] = { MEM_W(0x2F8, camera), MEM_W(0x2FC, camera), MEM_W(0x300, camera) };
+                const int32_t save_from[3] = { MEM_W(0x304, camera), MEM_W(0x308, camera), MEM_W(0x30C, camera) };
+                const int32_t save_26c = MEM_W(0x26C, camera);
+                const int32_t save_360 = MEM_W(0x360, camera);
+                const int32_t save_3e8 = MEM_BU(0x3E8, camera);
+                const int32_t save_5f0 = MEM_W(0x5F0, camera);
+                const int32_t save_94c = MEM_W(0x94C, camera);
+                const int32_t save_950 = MEM_W(0x950, camera);
+                const int32_t save_954 = MEM_W(0x954, camera);
+                const int32_t save_958 = MEM_W(0x958, camera);
+                const int32_t save_95c = MEM_W(0x95C, camera);
+                const int32_t save_960 = MEM_W(0x960, camera);
+
+                write_float(rdram, camera, 0x304, cx_now);
+                write_float(rdram, camera, 0x308, cy_now);
+                write_float(rdram, camera, 0x30C, cz_now);
+                write_float(rdram, camera, 0x2F8, cx_now + rx * (dir_sign * 34.0f));
+                write_float(rdram, camera, 0x2FC, cy_now + desired_up);
+                write_float(rdram, camera, 0x300, cz_now + rz * (dir_sign * 34.0f));
+                recomp_context call = *ctx;
+                call.r4 = camera;
+                orbit.ots_probing = true;
+                func_1512BB10(rdram, &call);
+                orbit.ots_probing = false;
+
+                const float hx = read_float(rdram, camera, 0x2F8);
+                const float hy = read_float(rdram, camera, 0x2FC);
+                const float hz = read_float(rdram, camera, 0x300);
+                orbit.ots_clear_side = dir_sign * std::clamp(((hx - cx_now) * rx + (hz - cz_now) * rz) * dir_sign, 0.0f, 34.0f);
+                orbit.ots_clear_up = std::clamp(hy - cy_now, 6.0f, desired_up);
+                orbit.ots_probe_has_sample = true;
+                orbit.ots_probe_cooldown = 1;
+                orbit.ots_probe_x = cx_now;
+                orbit.ots_probe_y = cy_now;
+                orbit.ots_probe_z = cz_now;
+                orbit.ots_probe_yaw = orbit.yaw;
+                orbit.ots_probe_up = desired_up;
+                orbit.ots_probe_left = orbit.ots_left_shoulder;
+
+                MEM_W(0x2F8, camera) = save_target[0];
+                MEM_W(0x2FC, camera) = save_target[1];
+                MEM_W(0x300, camera) = save_target[2];
+                MEM_W(0x304, camera) = save_from[0];
+                MEM_W(0x308, camera) = save_from[1];
+                MEM_W(0x30C, camera) = save_from[2];
+                MEM_W(0x26C, camera) = save_26c;
+                MEM_W(0x360, camera) = save_360;
+                MEM_B(0x3E8, camera) = save_3e8;
+                MEM_W(0x5F0, camera) = save_5f0;
+                MEM_W(0x94C, camera) = save_94c;
+                MEM_W(0x950, camera) = save_950;
+                MEM_W(0x954, camera) = save_954;
+                MEM_W(0x958, camera) = save_958;
+                MEM_W(0x95C, camera) = save_95c;
+                MEM_W(0x960, camera) = save_960;
+            }
+            else if (orbit.ots_probe_cooldown > 0) {
+                orbit.ots_probe_cooldown--;
+            }
+            const float target_up = std::min(orbit.ots_clear_up, desired_up);
+            orbit.ots_shoulder_x += (orbit.ots_clear_side - orbit.ots_shoulder_x) * (std::fabs(orbit.ots_clear_side) < std::fabs(orbit.ots_shoulder_x) ? 0.55f : 0.18f);
+            orbit.ots_shoulder_up += (target_up - orbit.ots_shoulder_up) * (target_up < orbit.ots_shoulder_up ? 0.45f : 0.22f);
+        }
+        else {
+            orbit.ots_probe_has_sample = false;
+        }
     }
     orbit.placed = false;
     // For the controller's input until the next update: whether the stick turns this camera.
@@ -631,7 +929,7 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
 // and Conker's movement (by the eye's direction across the ground) are as they were.
 extern "C" void conker_mouse_camera_aim(uint8_t* rdram, recomp_context* ctx) {
     const gpr camera = ctx->r16;
-    if (!orbit.engaged || orbit.aim <= 0.0f || (uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
+    if (!orbit.engaged || (first_person_setting() && cutscene_or_intro_now(rdram)) || orbit.aim <= 0.0f || (uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
         return;
     }
     // The eye from where it's copied (+0x2F8): the copy's z (+0x2F4) is stored after this, in the branch's delay slot.
@@ -647,6 +945,119 @@ extern "C" void conker_mouse_camera_aim(uint8_t* rdram, recomp_context* ctx) {
     write_float(rdram, camera, 0x2E0, ex + lx * scale);
     write_float(rdram, camera, 0x2E4, ey + distance * std::sin(view));
     write_float(rdram, camera, 0x2E8, ez + lz * scale);
+}
+
+// func_1512C490 at 0x1512C848, right before jal 0x150491EC: $a0 ($sp+0xEC) is the
+// final view eye, $a1 ($sp+0xE0) is the final view look-at, and $s0 is the camera.
+// In First person mode, replace only those stack vectors so all game camera state
+// (+0x2A4, +0x2BC, +0x2F8, +0x304) stays untouched.
+extern "C" void conker_first_person_view(uint8_t* rdram, recomp_context* ctx) {
+    const gpr camera = ctx->r16;
+    if (!first_person_setting() || !orbit.engaged || cutscene_or_intro_now(rdram) ||
+        (uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
+        return;
+    }
+    // Over-the-shoulder offset: wall-cleared left/right & up offset (plus jump lift),
+    // slight horizon convergence, damped pivot follow, and smooth jump-tilt.
+    const float rx = std::sin(orbit.yaw);
+    const float rz = -std::cos(orbit.yaw);
+    const float shoulder_x = orbit.ots_shoulder_x;
+    const float shoulder_up = orbit.ots_shoulder_up;
+    const float base_up = std::min(shoulder_up, 24.0f);
+    const float jump_up = std::max(shoulder_up - 24.0f, 0.0f);
+    const float look_x = shoulder_x * 0.50f;
+    const float look_up = base_up * 0.92f + jump_up * 0.45f;
+    const float piv_dx = orbit.has_ots_pivot ? (orbit.ots_pivot[0] - read_float(rdram, camera, 0x2BC)) : 0.0f;
+    const float piv_dy = orbit.has_ots_pivot ? (orbit.ots_pivot[1] - read_float(rdram, camera, 0x2C0)) : 0.0f;
+    const float piv_dz = orbit.has_ots_pivot ? (orbit.ots_pivot[2] - read_float(rdram, camera, 0x2C4)) : 0.0f;
+    const gpr eye_ptr = ctx->r4;
+    const gpr look_ptr = ctx->r5;
+    const float ex = read_float(rdram, eye_ptr, 0) + rx * shoulder_x;
+    const float ey = read_float(rdram, eye_ptr, 4) + shoulder_up;
+    const float ez = read_float(rdram, eye_ptr, 8) + rz * shoulder_x;
+    float lx = read_float(rdram, look_ptr, 0) + piv_dx + rx * look_x;
+    float ly = read_float(rdram, look_ptr, 4) + piv_dy + look_up;
+    float lz = read_float(rdram, look_ptr, 8) + piv_dz + rz * look_x;
+    if (orbit.jump_tilt > 0.0001f) {
+        const float dx = lx - ex;
+        const float dy = ly - ey;
+        const float dz = lz - ez;
+        const float horiz = std::sqrt(dx * dx + dz * dz);
+        if (horiz > 0.001f) {
+            const float dist = std::sqrt(horiz * horiz + dy * dy);
+            const float p = std::atan2(dy, horiz);
+            const float p_new = std::max(p - orbit.jump_tilt, -80.0f * degrees_to_radians);
+            const float scale = (dist * std::cos(p_new)) / horiz;
+            lx = ex + dx * scale;
+            ly = ey + dist * std::sin(p_new);
+            lz = ez + dz * scale;
+        }
+    }
+    write_float(rdram, eye_ptr, 0, ex);
+    write_float(rdram, eye_ptr, 4, ey);
+    write_float(rdram, eye_ptr, 8, ez);
+    write_float(rdram, look_ptr, 0, lx);
+    write_float(rdram, look_ptr, 4, ly);
+    write_float(rdram, look_ptr, 8, lz);
+
+    // Sync the camera's skybox pitch (+0x388) and yaw (+0x37C/+0x380) to the OTS view vector
+    // so the skybox stays locked to the 3D horizon instead of drifting with OTS offsets/pivots.
+    const float saved_look[3] = {
+        read_float(rdram, camera, 0x2BC),
+        read_float(rdram, camera, 0x2C0),
+        read_float(rdram, camera, 0x2C4),
+    };
+    const float saved_eye[3] = {
+        read_float(rdram, camera, 0x2F8),
+        read_float(rdram, camera, 0x2FC),
+        read_float(rdram, camera, 0x300),
+    };
+    write_float(rdram, camera, 0x2BC, lx);
+    write_float(rdram, camera, 0x2C0, ly);
+    write_float(rdram, camera, 0x2C4, lz);
+    write_float(rdram, camera, 0x2F8, ex);
+    write_float(rdram, camera, 0x2FC, ey);
+    write_float(rdram, camera, 0x300, ez);
+    recomp_context call = *ctx;
+    call.r29 = ADD32(ctx->r29, -0x40);
+    call.r4 = camera;
+    func_1512523C(rdram, &call);
+    call.r4 = camera;
+    func_15125330(rdram, &call);
+    write_float(rdram, camera, 0x2BC, saved_look[0]);
+    write_float(rdram, camera, 0x2C0, saved_look[1]);
+    write_float(rdram, camera, 0x2C4, saved_look[2]);
+    write_float(rdram, camera, 0x2F8, saved_eye[0]);
+    write_float(rdram, camera, 0x2FC, saved_eye[1]);
+    write_float(rdram, camera, 0x300, saved_eye[2]);
+    float yaw_380 = read_float(rdram, camera, 0x37C) - read_float(rdram, camera, 0x5E8);
+    if (yaw_380 < 0.0f) {
+        yaw_380 += 360.0f;
+    }
+    else if (yaw_380 >= 360.0f) {
+        yaw_380 -= 360.0f;
+    }
+    write_float(rdram, camera, 0x380, yaw_380);
+    write_float(rdram, camera, 0x3A0, yaw_380 * degrees_to_radians);
+}
+
+// func_151236D0 before its first instruction: skip water crossing state and splash side effects
+// while the Over-the-shoulder clearance probe calls func_1512BB10.
+extern "C" bool conker_camera_water_skip() {
+    return orbit.ots_probing;
+}
+
+// func_151236D0 before 0x151237D0 (c.le.s $f10, $f8: $f10 = camera +0x2FC, $f8 = water +0x360):
+// when Over-the-shoulder is active, test the actual OTS eye height (+ ots_shoulder_up) so the
+// underwater blue tint and splash only trigger when the rendered camera itself enters water.
+extern "C" void conker_camera_water_eye(uint8_t* rdram, recomp_context* ctx) {
+    const gpr camera = ctx->r5;
+    if (!first_person_setting() || !orbit.engaged || !orbit.follow_camera_ran ||
+        orbit.look_mode_ran || conker::look_aim::leaping_now() || cutscene_or_intro_now(rdram) ||
+        (uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
+        return;
+    }
+    ctx->f10.fl += orbit.ots_shoulder_up;
 }
 
 // func_15122C5C (the follow camera's update), after it keeps $a0 in $s0 (0x15122C6C): the view's eye raised

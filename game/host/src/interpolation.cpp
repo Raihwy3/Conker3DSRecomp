@@ -37,8 +37,19 @@
 #include "recomp.h"
 
 #include "conker.hpp"
+#ifdef CONKER_3DS
+#include "rt64_3ds.h"
+#endif
 
 namespace {
+    inline bool interp_groups_active() {
+#ifdef CONKER_3DS
+        return rt64_3ds::settings().frame_cap == 2;
+#else
+        return true;
+#endif
+    }
+
     // RT64's extended GBI (tools/rt64/include/rt64_extended_gbi.h) for F3DEX2,
     // whose no-op (0xE0) carries RT64's hooks.
     constexpr uint32_t rt64_hook_opcode = 0xE0;
@@ -110,6 +121,7 @@ void conker::shadows::game_frame() {
 // commands go first, and the function writes after them. IDs are neither 0
 // (G_EX_ID_IGNORE) nor 0xFFFFFFFF (G_EX_ID_AUTO).
 extern "C" void conker_object_matrix_group_begin(uint8_t* rdram, recomp_context* ctx) {
+    if (!interp_groups_active()) return;
     const uint32_t object = (uint32_t)ctx->r5 & 0xFFFF;
     const uint32_t kind = (uint32_t)MEM_W(0x168, ctx->r29) & 0xFF;
     gpr dl = ctx->r4;
@@ -119,6 +131,7 @@ extern "C" void conker_object_matrix_group_begin(uint8_t* rdram, recomp_context*
 
 // At its return: $v0 is the end of what it wrote. The group is popped after it.
 extern "C" void conker_object_matrix_group_end(uint8_t* rdram, recomp_context* ctx) {
+    if (!interp_groups_active()) return;
     gpr dl = ctx->r2;
     put_pop(rdram, dl);
     ctx->r2 = dl;
@@ -131,8 +144,10 @@ extern "C" void conker_shadow_matrix_group_begin(uint8_t* rdram, recomp_context*
     gpr dl = ctx->r4;
     shadow_index = shadow;
     shadow_dl_start = dl;
-    put_group(rdram, dl, 0x53480000u | shadow, shadow_group_params);
-    ctx->r4 = dl;
+    if (interp_groups_active()) {
+        put_group(rdram, dl, 0x53480000u | shadow, shadow_group_params);
+        ctx->r4 = dl;
+    }
 }
 
 // At its return: $v0 is the end of what it wrote. A shadow not drawn last game frame isn't
@@ -146,6 +161,7 @@ extern "C" void conker_shadow_matrix_group_end(uint8_t* rdram, recomp_context* c
         ctx->r2 = shadow_dl_start;
         return;
     }
+    if (!interp_groups_active()) return;
     gpr dl = ctx->r2;
     put_pop(rdram, dl);
     ctx->r2 = dl;

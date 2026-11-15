@@ -3129,6 +3129,7 @@ private:
                 // An off-screen image drawn on the GPU (this frame or earlier).
                 RttTarget& rt = rtt_[d.tex[t].rtt];
                 if (rt.rt != nullptr) {
+                    rt.last_used_frame = frames_;
                     if (&rt.tex != last_tex_[t]) {
                         C3D_TexBind(t, &rt.tex);
                         last_tex_[t] = &rt.tex; last_tex_param_[t] = 0xFFFFFFFEu;
@@ -4229,11 +4230,25 @@ public:
         uint16_t w = 0, h = 0;
         C3D_Mtx proj{};
         uint32_t clear_frame = ~0u;
+        uint32_t last_used_frame = 0;
     };
     RttTarget rtt_[rt64_3ds::kMaxRtt];
     uint32_t rtt_room_frame_ = ~0u - 8;          // the texture cache last gave VRAM back for a target
     uint32_t rtt_no_vram_ = 0;                   // targets refused for VRAM, for the log's first lines
     int cur_target_ = -1;                        // the RTT slot drawn into, -1 = the eye
+    void retire_oldest_idle_rtt(int keep) {
+        int victim = -1;
+        for (int j = 0; j < rt64_3ds::kMaxRtt; j++) {
+            if (j == keep || rtt_[j].rt == nullptr || rtt_[j].last_used_frame >= frames_) continue;
+            if (victim < 0 || rtt_[j].last_used_frame < rtt_[victim].last_used_frame) victim = j;
+        }
+        if (victim >= 0) {
+            retired_rtt_.push_back({ rtt_[victim].rt, rtt_[victim].tex });
+            rtt_[victim].rt = nullptr;
+            rtt_[victim].w = 0;
+            rtt_[victim].h = 0;
+        }
+    }
     RttTarget* ensure_rtt(int i) {
         const rt64_3ds::RttImage& img = frame_.rtts[i];
         RttTarget& t = rtt_[i];
@@ -4242,11 +4257,11 @@ public:
             // the GPU may still read it): retire it until the next frame start.
             if (t.rt != nullptr) { retired_rtt_.push_back({ t.rt, t.tex }); t.rt = nullptr; }
             if (img.pot_w == 0 || img.pot_h == 0) return nullptr;
-            // Short of VRAM (textures took it): the texture cache gives some
-            // back (free three frames on) and keeps it free; again every four
-            // frames the target still fails.
+            // Short of VRAM (textures or an idle render target took it): free
+            // stale targets and ask the texture cache for room for the next frame.
             const uint32_t need = (uint32_t)img.pot_w * img.pot_h * 8;   // RGBA8 + D24S8
             if (!C3D_TexInitVRAM(&t.tex, img.pot_w, img.pot_h, GPU_RGBA8)) {
+                retire_oldest_idle_rtt(i);
                 if (frames_ - rtt_room_frame_ >= 4) { textures_.make_vram_room(need); rtt_room_frame_ = frames_; }
                 if (++rtt_no_vram_ <= 5 || (rtt_no_vram_ & 255) == 0)
                     fprintf(stderr, "rt64-3ds: no VRAM for a %ux%u render texture (%u times)\n", (unsigned)img.pot_w, (unsigned)img.pot_h, (unsigned)rtt_no_vram_);
@@ -4255,6 +4270,7 @@ public:
             t.rt = C3D_RenderTargetCreateFromTex(&t.tex, GPU_TEXFACE_2D, 0, GPU_RB_DEPTH24_STENCIL8);
             if (t.rt == nullptr) {
                 C3D_TexDelete(&t.tex);
+                retire_oldest_idle_rtt(i);
                 if (frames_ - rtt_room_frame_ >= 4) { textures_.make_vram_room(need); rtt_room_frame_ = frames_; }
                 fprintf(stderr, "rt64-3ds: render target for a %ux%u texture failed\n", (unsigned)img.pot_w, (unsigned)img.pot_h);
                 return nullptr;
@@ -4269,6 +4285,7 @@ public:
             fprintf(stderr, "rt64-3ds: render texture %d for image %06x (%u wide): %ux%u (frame %u)\n", i, img.addr & 0xFFFFFF,
                     (unsigned)img.width, (unsigned)t.w, (unsigned)t.h, frames_);
         }
+        t.last_used_frame = frames_;
         if (t.clear_frame != frames_) {
             static int logged = 0;
             if (logged < 60) { logged++; fprintf(stderr, "rt64-3ds: frame %u draws into render texture %d\n", frames_, i); }
@@ -4284,6 +4301,14 @@ public:
     // Out of the frame, just before C3D_FrameBegin (which would wait for the
     // GPU anyway): render targets ensure_rtt replaced.
     void retire_rtt_targets() {
+        for (RttTarget& t : rtt_) {
+            if (t.rt != nullptr && frames_ - t.last_used_frame > 60) {
+                retired_rtt_.push_back({ t.rt, t.tex });
+                t.rt = nullptr;
+                t.w = 0;
+                t.h = 0;
+            }
+        }
         for (RetiredRtt& r : retired_rtt_) { C3D_RenderTargetDelete(r.rt); C3D_TexDelete(&r.tex); }
         retired_rtt_.clear();
     }

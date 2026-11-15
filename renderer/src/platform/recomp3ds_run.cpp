@@ -992,9 +992,11 @@ extern "C" void __system_allocateHeaps(void) {
     svcCloseHandle(reslimit);
     const u32 remaining = (u32)(max_commit - current_commit) & ~0xFFFu;
 #ifdef RT64_3DS_LINEAR_HEAP_MB
-    // The game's own choice (CMake RT64_3DS_LINEAR_HEAP_MB): Dinosaur Planet
-    // takes 16 MB so its 64 MB ROM fits the application heap beside RDRAM.
-    __ctru_linear_heap_size = (u32)RT64_3DS_LINEAR_HEAP_MB << 20;
+    // The game's own choice (CMake RT64_3DS_LINEAR_HEAP_MB): keep 16 MB on Old 3DS
+    // so RDRAM + ROM cache fit, and allow 24 MB on New 3DS (>= 96 MB remaining) so
+    // citro3d targets + HD textures do not exhaust linear RAM.
+    const u32 want_mb = (remaining >= (96u << 20) && RT64_3DS_LINEAR_HEAP_MB < 24) ? 24u : (u32)RT64_3DS_LINEAR_HEAP_MB;
+    __ctru_linear_heap_size = want_mb << 20;
     if (__ctru_linear_heap_size > remaining / 2) __ctru_linear_heap_size = remaining / 2;
 #else
     __ctru_linear_heap_size = remaining >= (96u << 20) ? (32u << 20) : (16u << 20);

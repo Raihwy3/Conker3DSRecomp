@@ -652,6 +652,21 @@ func = "func_1512C490"
 before_vram = 0x1512C640
 text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); extern void conker_look_view(uint8_t*, recomp_context*); conker_look_view(rdram, ctx); extern void conker_leap_view_lift(uint8_t*, recomp_context*); conker_leap_view_lift(rdram, ctx); }"
 
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512C848
+text = "{ extern void conker_first_person_view(uint8_t*, recomp_context*); conker_first_person_view(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151236D0"
+before_vram = 0x151236D0
+text = "{ extern bool conker_camera_water_skip(void); if (conker_camera_water_skip()) return; }"
+
+[[patches.hook]]
+func = "func_151236D0"
+before_vram = 0x151237D0
+text = "{ extern void conker_camera_water_eye(uint8_t*, recomp_context*); conker_camera_water_eye(rdram, ctx); }"
+
 # Motion blur (func_151D6778, Conker drunk): a frame it's drawn in is drawn without frames between it
 # and the next, so the blur blends with a whole frame's ghost as on the N64 (host/src/widescreen.cpp,
 # issue #77).

@@ -204,6 +204,8 @@ namespace conker {
         // on, the normal camera, not R-Look or aiming): the controller's input then leaves the right
         // stick off the C-buttons (frontend.cpp). Safe from any thread.
         bool stick_turns_camera();
+        // Whether the first-person camera is currently active for the player's normal camera.
+        bool first_person_active();
     }
 
 #if defined(CONKER_RT64) || defined(CONKER_3DS)

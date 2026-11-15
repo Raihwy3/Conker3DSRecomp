@@ -45,7 +45,7 @@ void sqrtf_recomp(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
 
-inline uint8_t* at(uint8_t* rdram, uint32_t addr) { return rdram + (uint32_t)(addr - 0x80000000u); }
+inline uint8_t* at(uint8_t* rdram, uint32_t addr) { return rdram + RECOMP_RDRAM_OFFSET(addr); }
 inline float ldf(uint8_t* rdram, uint32_t addr) { float v; memcpy(&v, at(rdram, addr), 4); return v; }
 inline void stf(uint8_t* rdram, uint32_t addr, float v) { memcpy(at(rdram, addr), &v, 4); }
 inline uint32_t ldw(uint8_t* rdram, uint32_t addr) { uint32_t v; memcpy(&v, at(rdram, addr), 4); return v; }

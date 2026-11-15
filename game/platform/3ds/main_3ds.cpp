@@ -30,9 +30,16 @@ extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 RspExitReason conker_audio_ucode(uint8_t* rdram, uint32_t ucode_addr);
 
 static std::atomic<bool> g_free_camera{true};
+static std::atomic<bool> g_first_person_camera{false};
 static std::atomic<bool> g_achievement_popups{true};
 extern "C" bool conker_3ds_free_camera_enabled() {
     return g_free_camera.load();
+}
+extern "C" bool conker_3ds_first_person_enabled() {
+    return g_first_person_camera.load();
+}
+extern "C" bool conker_3ds_shoulder_swap_held() {
+    return (hidKeysHeld() & KEY_ZR) != 0;
 }
 namespace { void refresh_achievement_labels(); }
 void conker::notices::show(const std::string& text, bool replace) {
@@ -112,8 +119,11 @@ int g_lives_display=1,g_chapter_display=1,g_gfx_text=0;
 const char* const kLivesDisplay[]={"Full","Icons only","Hidden"};
 const char* const kOptionsButtonNames[] = { "Off", "On" };
 int g_free_camera_value = 1;
-const char* const kFreeCameraNames[] = { "Original", "Free orbit" };
-void apply_free_camera(int v) { g_free_camera.store(v!=0); }
+const char* const kFreeCameraNames[] = { "Original", "Free orbit", "Over shoulder" };
+void apply_free_camera(int v) {
+    g_free_camera.store(v != 0);
+    g_first_person_camera.store(v == 2);
+}
 const char* const kTouchModes[] = { "Movement", "Look" };
 
 const char* const kOffOn[]={"Off","On"};
@@ -318,7 +328,7 @@ const MenuOption kOptions[] = {
       screen_conker_set_options_button, PageGame },
     { "achievement_popups", "Achievement popups", 0, 1, &g_achievement_popups_value, kOffOn,
       apply_achievement_popups, PageGame },
-    { "free_camera", "Camera", 0, 1, &g_free_camera_value, kFreeCameraNames,
+    { "free_camera", "Camera", 0, 2, &g_free_camera_value, kFreeCameraNames,
       apply_free_camera, PageControls },
     { "touch_stick", "Touchscreen", 0, 1, &g_touch_mode, kTouchModes,
       input_set_touch_stick_mode, PageControls },

@@ -3,6 +3,7 @@
 // RDRAM is the recompiled runtime's byte-swapped image: byte a lives at
 // [a ^ 3], halfword a at [a ^ 2], aligned words in host order.
 #include "rt64_3ds_dl.h"
+#include "rt64_3ds.h"
 #include "rt64_3ds_texdecode.h"
 
 #include <algorithm>
@@ -2285,6 +2286,11 @@ struct Interpreter::Impl {
                     ip->tri_uv.push_back(u); ip->tri_uv.push_back(w);
                 }
             }
+        }
+        if (rt64_3ds::first_person_head_cull() && cur_rtt < 0 &&
+            (mv_groups[mv_group_depth] & 0xFF00FFFFu) == 0x43000000u &&
+            (a.w < 22.0f || b.w < 22.0f || c.w < 22.0f)) {
+            return;
         }
         if (deferred) {
             defer_tri(i0, i1, i2);
