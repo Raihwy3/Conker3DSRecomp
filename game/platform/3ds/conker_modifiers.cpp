@@ -14,7 +14,9 @@
 #include <cstring>
 
 extern "C" void func_1501C730(uint8_t*,recomp_context*);
+extern "C" void func_1510B690(uint8_t*,recomp_context*);
 extern "C" void func_1512C490(uint8_t*,recomp_context*);
+extern "C" void conker_enter_photo_mode_ui();
 extern "C" void conker_exit_photo_mode_ui();
 extern "C" void conker_photo_camera(uint8_t*, recomp_context*);
 namespace recomp3ds { u32 settings_menu_keys(); }
@@ -178,6 +180,28 @@ extern "C" int conker_frame_update_hook(uint8_t* rdram, recomp_context* ctx) {
         }
     }
 
+    // Photo Mode optional shortcut (default: D-Pad Right)
+    if (scene > 0 && scene < 0x100) {
+        static bool prev_photo_combo = false;
+        static constexpr u32 kShortcutMasks[] = {
+            0, KEY_DRIGHT, KEY_R | KEY_DRIGHT, KEY_L | KEY_DDOWN, KEY_SELECT
+        };
+        const int bind = conker3ds::get("misc_photo_shortcut", 1);
+        const u32 mask = (bind > 0 && bind < 5) ? kShortcutMasks[bind] : 0;
+        const u32 masked = recomp3ds::settings_menu_keys();
+        const uint32_t held_now = hidKeysHeld() & ~masked;
+        const bool combo_down = (mask != 0) && ((held_now & mask) == mask);
+        if (combo_down && !prev_photo_combo) {
+            if (conker3ds::get("misc_photo_mode", 0)) {
+                g_photo.active = false;
+                conker_exit_photo_mode_ui();
+            } else {
+                conker_enter_photo_mode_ui();
+            }
+        }
+        prev_photo_combo = combo_down;
+    }
+
     // Photo Mode world freeze + direct camera update + view matrix rebuild
     if (conker3ds::get("misc_photo_mode", 0) && scene > 0 && scene < 0x100) {
         const uint32_t cam = (uint32_t)MEM_W(0, addr(0x800DBFF0));
@@ -187,6 +211,8 @@ extern "C" int conker_frame_update_hook(uint8_t* rdram, recomp_context* ctx) {
                 recomp_context cam_ctx = *ctx;
                 cam_ctx.r4 = (gpr)(int32_t)cam;
                 func_1512C490(rdram, &cam_ctx);
+                recomp_context cull_ctx = *ctx;
+                func_1510B690(rdram, &cull_ctx);
                 ctx->r2 = 1;
                 return 1;
             }

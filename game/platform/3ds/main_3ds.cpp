@@ -94,7 +94,7 @@ using namespace recomp3ds;
 const ButtonMap kButtons[] = {
     { KEY_A, N64_A },
     { KEY_B, N64_B },
-    { KEY_L | KEY_ZL, N64_Z },
+    { KEY_L, N64_Z },
     { KEY_R, N64_R },
     { KEY_ZR, N64_L },
     { KEY_START, N64_START },
@@ -118,6 +118,8 @@ const MenuDefault kDefaults[] = {
     { "perf_monitor", 0 },
     { "log_level", 0 },
     { "free_camera", 1 },
+    { "misc_photo_mode", 0 },
+    { "misc_photo_shortcut", 1 },
     { "recenter_button", 1 },
     { "shoulder_swap_button", 1 },
     { "aim_swap_sticks", 0 },
@@ -197,12 +199,19 @@ void apply_audio_voice_vol(int v){conker3ds::set("audio_voice_vol",v);}
 int g_skip_cutscene=0;
 void apply_skip_cutscene(int v){conker3ds::set("misc_skip_cutscene",v);}
 int g_photo_mode=0;
+int g_photo_shortcut=1;
+const char* const kPhotoShortcutNames[]={"Off","D-Pad Right","R+D-Pad Right","L+D-Pad Down","Select"};
+void apply_photo_shortcut(int v){conker3ds::set("misc_photo_shortcut",v);}
 extern "C" bool conker_3ds_photo_mode_active() {
     return g_photo_mode != 0;
 }
 void apply_photo_mode(int v){
     conker3ds::set("misc_photo_mode",v);
     if(v!=0) recomp3ds::screen_conker_set_subnote("Photo: Pad move, C/D look, L/R up/dn, A shot, B exit");
+}
+extern "C" void conker_enter_photo_mode_ui(){
+    g_photo_mode=1;
+    apply_photo_mode(1);
 }
 extern "C" void conker_exit_photo_mode_ui(){
     g_photo_mode=0;
@@ -291,6 +300,7 @@ const MenuOption kOptions[] = {
     {"misc_skip_intro","Skip intro",0,1,&g_skip_intro,kOffOn,apply_skip_intro,PageGame},
     {"misc_skip_cutscene","Hold B skip cutscene",0,1,&g_skip_cutscene,kOffOn,apply_skip_cutscene,PageGame},
     {"misc_photo_mode","Photo mode",0,1,&g_photo_mode,kOffOn,apply_photo_mode,PageGame},
+    {"misc_photo_shortcut","Shortcut",0,4,&g_photo_shortcut,kPhotoShortcutNames,apply_photo_shortcut,PageGame},
     {"misc_cheat_invincible","Cheat: Invincible",0,1,&g_cheat_invincible,kOffOn,apply_cheat_invincible,PageGame},
     {"misc_cheat_inf_lives","Cheat: Infinite lives",0,1,&g_cheat_inf_lives,kOffOn,apply_cheat_inf_lives,PageGame},
     {"misc_cheat_max_cash","Cheat: Max cash",0,1,&g_cheat_max_cash,kOffOn,apply_cheat_max_cash,PageGame},

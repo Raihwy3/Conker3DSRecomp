@@ -252,6 +252,9 @@ namespace {
         float idle_time = 0.0f;
         float idle_pull = 0.0f;
         float slope_pitch = 0.0f;
+        float swim_pull = 0.0f;
+        float water_level = 0.0f;
+        int water_frames = 0;
         std::chrono::steady_clock::time_point stick_time;
     } orbit;
 
@@ -621,6 +624,7 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
             float target_jump_pull = 0.0f;
             float jump_cam_lift = 0.0f;
             bool melee_active = false;
+            bool swim_active = false;
             bool char_moved = false;
             float air_now = 0.0f;
             float target_lead_x = 0.0f;
@@ -667,7 +671,10 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
                 if (air_now > 0.0f) {
                     target_jump_tilt = std::clamp(air_now * 0.0020f, 0.0f, 7.5f * degrees_to_radians);
                     target_jump_lift = std::clamp(air_now * 0.75f, 0.0f, 44.0f);
-                    target_jump_pull = std::clamp(air_now * 0.40f, 0.0f, 32.0f);
+                    target_jump_pull = std::clamp(air_now * 0.48f, 0.0f, 42.0f);
+                }
+                if (orbit.water_frames > 0 && char_y < orbit.water_level - 10.0f) {
+                    swim_active = true;
                 }
                 if (char_y > cy + 2.0f) {
                     jump_cam_lift = std::clamp((char_y - cy - 2.0f) * 0.72f, 0.0f, 38.0f);
@@ -716,6 +723,12 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
                 ? std::clamp((-slope_vy - 22.0f) * 0.0012f, 0.0f, 0.12f)
                 : 0.0f;
             orbit.slope_pitch += (target_slope_pitch - orbit.slope_pitch) * ots_alpha(0.08f, dt);
+
+            const float target_swim_pull = swim_active ? 26.0f : 0.0f;
+            orbit.swim_pull += (target_swim_pull - orbit.swim_pull) * ots_alpha(swim_active ? 0.14f : 0.08f, dt);
+            if (orbit.water_frames > 0) {
+                orbit.water_frames--;
+            }
 
             if (char_moved) {
                 orbit.walk_time += dt;
@@ -784,7 +797,7 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         const float pitch_dist = (orbit.pitch < 0.0f)
             ? (162.0f + std::max(orbit.pitch, -1.0f) * 45.0f)
             : (162.0f - std::min(orbit.pitch, 1.0f) * 16.0f);
-        orbit.wanted = pitch_dist + orbit.jump_pull + orbit.melee_pull + orbit.walk_pull + orbit.idle_pull;
+        orbit.wanted = pitch_dist + orbit.jump_pull + orbit.melee_pull + orbit.walk_pull + orbit.idle_pull + orbit.swim_pull;
     }
     else {
         orbit.jump_tilt = 0.0f;
@@ -792,6 +805,7 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         orbit.jump_pull = 0.0f;
         orbit.melee_pull = 0.0f;
         orbit.melee_hold = 0;
+        orbit.swim_pull = 0.0f;
         orbit.walk_time = 0.0f;
         orbit.stop_grace = 0.0f;
         orbit.walk_zoomed_out = false;
@@ -1230,6 +1244,8 @@ extern "C" void conker_camera_water_eye(uint8_t* rdram, recomp_context* ctx) {
         (uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
         return;
     }
+    orbit.water_level = ctx->f8.fl;
+    orbit.water_frames = 4;
     ctx->f10.fl += orbit.ots_shoulder_up;
 }
 

@@ -1755,12 +1755,19 @@ private:
         GpuVertex* vb = frame_.verts.data();
         size_t n = frame_.verts.size();
         // A full-screen quad after the frame's vertices, for the ghost pass.
+        const rt64_3ds::Settings& eff = rt64_3ds::settings();
         const bool ghost = n + 6 <= kVboVerts && write_ghost_quad(vb + n);
-        const bool post = post_ok_ && rt64_3ds::settings().image_filter != 0 && n + 48 <= kVboVerts && !offscreen_frame;
-        if (post) write_post_quads(vb + n + 12);
+        const bool post = post_ok_ && (eff.image_filter != 0 || eff.image_bloom != 0) && n + 78 <= kVboVerts && !offscreen_frame;
+        const bool vignette = eff.image_vignette != 0 && n + 174 <= kVboVerts && !offscreen_frame;
+        if (post) {
+            if (eff.image_filter != 0) write_post_quads(vb + n + 12);
+            if (eff.image_bloom != 0) write_bloom_quads(vb + n + 54);
+        }
+        if (vignette) write_vignette_ring(vb + n + 78, eff.image_vignette);
         // The kernel's flush, on this core: GSPGPU_FlushDataCache is a
         // request to the GSP module on core 1, which waits for that core.
-        flush_dcache(vb, (n + (post ? 48 : ghost ? 6 : 0)) * sizeof(GpuVertex));
+        const size_t tail = vignette ? 174 : post ? 78 : ghost ? 6 : 0;
+        flush_dcache(vb, (n + tail) * sizeof(GpuVertex));
         C3D_BufInfo* bi = C3D_GetBufInfo();
         BufInfo_Init(bi);
         BufInfo_Add(bi, vb, sizeof(GpuVertex), 3, 0x210);
@@ -1784,7 +1791,7 @@ private:
         // after the right eye's target and sign. Not for frames that draw
         // into other targets between the eyes' draws (off-screen images, the
         // frame copy), nor in the GPU debug mode.
-        bool eye_replay = eyes == 2 && !split && !(debug_frame && debug_sync_) && !post;
+        bool eye_replay = eyes == 2 && !split && !(debug_frame && debug_sync_) && !post && !vignette;
         bool has_rtt_draws = false;
         for (const rt64_3ds::DrawRecord& d : frame_.draws) if (d.rtt >= 0) { has_rtt_draws = true; break; }
         if (has_rtt_draws) eye_replay = false;
@@ -1983,7 +1990,8 @@ private:
             }
         }
         if (ghost && sfd.on && !offscreen_frame) ghost_pass((uint32_t)n);
-        if (post) post_pass((uint32_t)n + 12, cur_eye_[pass]);
+        if (post) post_pass((uint32_t)n + 12, (uint32_t)n + 54, cur_eye_[pass]);
+        if (vignette) vignette_pass((uint32_t)n + 78);
         if (toast_on) draw_toast(cur_eye_[pass], vb + n + 48, (uint32_t)(n + 48), toast_seq, toast_text, toast_rgba8, toast_w, toast_h);
         }   // eye passes
         // dbg_frame_trace_from / _count: the replay's decisions, a line a
@@ -2993,7 +3001,55 @@ private:
             q[tap*6+v] = GpuVertex{x[v],y[v],0,1,240-sy+du[tap],512-sx+dv[tap],255,255,255,255};
         }
     }
-    void post_pass(uint32_t first, C3D_RenderTarget* target) {
+    void write_bloom_quads(GpuVertex* q) {
+        const float l = -geo_.x0, r = (float)geo_.w + geo_.x0, bot = (float)geo_.h;
+        const float x[6] = {l,r,r,l,r,l}, y[6] = {0,0,bot,0,bot,bot};
+        const float du[4] = {-3.5f, 3.5f, -3.5f, 3.5f}, dv[4] = {-3.5f, -3.5f, 3.5f, 3.5f};
+        for (int tap = 0; tap < 4; tap++) for (int v = 0; v < 6; v++) {
+            const float sx = (x[v] + geo_.x0) * geo_.scale_x, sy = y[v] * geo_.scale;
+            q[tap*6+v] = GpuVertex{x[v],y[v],0,1,240-sy+du[tap],512-sx+dv[tap],255,255,255,255};
+        }
+    }
+    void write_vignette_ring(GpuVertex* q, int level) {
+        static constexpr uint8_t kStrengths[4] = { 0, 68, 118, 170 };
+        const uint8_t alpha = kStrengths[std::clamp(level, 0, 3)];
+        const float cx = (float)geo_.w * 0.5f, cy = (float)geo_.h * 0.5f;
+        const float rx_in = (float)geo_.w * 0.48f, ry_in = (float)geo_.h * 0.48f;
+        const float rx_out = (float)geo_.w * 0.92f, ry_out = (float)geo_.h * 0.92f;
+        constexpr int kSegs = 16;
+        constexpr float kTwoPi = 6.28318530718f;
+        for (int i = 0; i < kSegs; i++) {
+            const float a0 = kTwoPi * (float)i / (float)kSegs;
+            const float a1 = kTwoPi * (float)(i + 1) / (float)kSegs;
+            const float c0 = std::cos(a0), s0 = std::sin(a0);
+            const float c1 = std::cos(a1), s1 = std::sin(a1);
+            const GpuVertex i0{ cx + c0 * rx_in,  cy + s0 * ry_in,  0, 1, 0, 0, 0, 0, 0, 0 };
+            const GpuVertex i1{ cx + c1 * rx_in,  cy + s1 * ry_in,  0, 1, 0, 0, 0, 0, 0, 0 };
+            const GpuVertex o0{ cx + c0 * rx_out, cy + s0 * ry_out, 0, 1, 0, 0, 0, 0, 0, alpha };
+            const GpuVertex o1{ cx + c1 * rx_out, cy + s1 * ry_out, 0, 1, 0, 0, 0, 0, 0, alpha };
+            q[i * 6 + 0] = i0; q[i * 6 + 1] = o0; q[i * 6 + 2] = o1;
+            q[i * 6 + 3] = i0; q[i * 6 + 4] = o1; q[i * 6 + 5] = i1;
+        }
+    }
+    void vignette_pass(uint32_t first) {
+        set_cull(GPU_CULL_NONE);
+        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, u_xform_, &proj_);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_stereo_, 0, 0, 0, 0);
+        for (int i = 0; i < 6; i++) {
+            C3D_TexEnv* env = C3D_GetTexEnv(i);
+            C3D_TexEnvInit(env);
+            if (i == 0) C3D_TexEnvSrc(env, C3D_Both, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+            else C3D_TexEnvSrc(env, C3D_Both, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
+            C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+        }
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ZERO, GPU_ONE);
+        C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+        C3D_AlphaTest(false, GPU_ALWAYS, 0);
+        C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+        C3D_DrawArrays(GPU_TRIANGLES, first, 16 * 6);
+        forget_draw_state();
+    }
+    void post_pass(uint32_t first, uint32_t bloom_first, C3D_RenderTarget* target) {
         // Finish scene draws before copying their colour. Queue ordering keeps
         // the copy and subsequent sampling behind those draws on the GPU.
         C3D_FrameSplit(GX_CMDLIST_FLUSH);
@@ -3011,25 +3067,52 @@ private:
         C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
         C3D_AlphaTest(false,GPU_ALWAYS,0);
         for (int i=0;i<6;i++) { C3D_TexEnv* e=C3D_GetTexEnv(i); C3D_TexEnvInit(e); }
-        C3D_TexEnv* e=C3D_GetTexEnv(0);
-        C3D_TexEnvSrc(e,C3D_RGB,GPU_TEXTURE0,GPU_CONSTANT,GPU_CONSTANT);
-        C3D_TexEnvFunc(e,C3D_RGB,GPU_MODULATE);
-        C3D_TexEnvSrc(e,C3D_Alpha,GPU_CONSTANT,GPU_CONSTANT,GPU_CONSTANT);
-        C3D_TexEnvFunc(e,C3D_Alpha,GPU_REPLACE);
-        const bool strong=rt64_3ds::settings().image_filter==2;
-        C3D_SetScissor(GPU_SCISSOR_NORMAL,sample_scale_,1,239*sample_scale_,399);
-        for(int tap=0;tap<5;tap++) {
-            const u32 weight=tap==0?(strong?127:191):(strong?32:16);
-            C3D_TexEnvColor(C3D_GetTexEnv(0),0xff000000u|weight|(weight<<8)|(weight<<16));
-            C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_ONE,tap==0?GPU_ZERO:GPU_ONE,GPU_ONE,GPU_ZERO);
-            C3D_DrawArrays(GPU_TRIANGLES,first+tap*6,6);
+        const int filter_lv = rt64_3ds::settings().image_filter;
+        const int bloom_lv = rt64_3ds::settings().image_bloom;
+        if (filter_lv != 0) {
+            C3D_TexEnv* e=C3D_GetTexEnv(0);
+            C3D_TexEnvSrc(e,C3D_RGB,GPU_TEXTURE0,GPU_CONSTANT,GPU_CONSTANT);
+            C3D_TexEnvFunc(e,C3D_RGB,GPU_MODULATE);
+            C3D_TexEnvSrc(e,C3D_Alpha,GPU_CONSTANT,GPU_CONSTANT,GPU_CONSTANT);
+            C3D_TexEnvFunc(e,C3D_Alpha,GPU_REPLACE);
+            const bool strong=filter_lv==2;
+            C3D_SetScissor(GPU_SCISSOR_NORMAL,sample_scale_,1,239*sample_scale_,399);
+            for(int tap=0;tap<5;tap++) {
+                const u32 weight=tap==0?(strong?127:191):(strong?32:16);
+                C3D_TexEnvColor(C3D_GetTexEnv(0),0xff000000u|weight|(weight<<8)|(weight<<16));
+                C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_ONE,tap==0?GPU_ZERO:GPU_ONE,GPU_ONE,GPU_ZERO);
+                C3D_DrawArrays(GPU_TRIANGLES,first+tap*6,6);
+            }
+            // Preserve the original outer pixel. Neighbour taps there would read
+            // the unused power-of-two padding beyond the image.
+            C3D_SetScissor(GPU_SCISSOR_INVERT,sample_scale_,1,239*sample_scale_,399);
+            C3D_TexEnvColor(C3D_GetTexEnv(0),0xffffffffu);
+            C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_ONE,GPU_ZERO,GPU_ONE,GPU_ZERO);
+            C3D_DrawArrays(GPU_TRIANGLES,first+30,6);
         }
-        // Preserve the original outer pixel. Neighbour taps there would read
-        // the unused power-of-two padding beyond the image.
-        C3D_SetScissor(GPU_SCISSOR_INVERT,sample_scale_,1,239*sample_scale_,399);
-        C3D_TexEnvColor(C3D_GetTexEnv(0),0xffffffffu);
-        C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_ONE,GPU_ZERO,GPU_ONE,GPU_ZERO);
-        C3D_DrawArrays(GPU_TRIANGLES,first+30,6);
+        if (bloom_lv != 0) {
+            constexpr u32 th = 0xB8;
+            constexpr u32 gn = 0x29;
+            C3D_TexEnv* e0 = C3D_GetTexEnv(0);
+            C3D_TexEnvInit(e0);
+            C3D_TexEnvSrc(e0, C3D_RGB, GPU_TEXTURE0, GPU_CONSTANT, GPU_CONSTANT);
+            C3D_TexEnvFunc(e0, C3D_RGB, GPU_SUBTRACT);
+            C3D_TexEnvSrc(e0, C3D_Alpha, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+            C3D_TexEnvFunc(e0, C3D_Alpha, GPU_REPLACE);
+            C3D_TexEnvColor(e0, 0xFF000000u | th | (th << 8) | (th << 16));
+            C3D_TexEnv* e1 = C3D_GetTexEnv(1);
+            C3D_TexEnvInit(e1);
+            C3D_TexEnvSrc(e1, C3D_RGB, GPU_PREVIOUS, GPU_CONSTANT, GPU_CONSTANT);
+            C3D_TexEnvFunc(e1, C3D_RGB, GPU_MODULATE);
+            C3D_TexEnvSrc(e1, C3D_Alpha, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
+            C3D_TexEnvFunc(e1, C3D_Alpha, GPU_REPLACE);
+            C3D_TexEnvColor(e1, 0xFF000000u | gn | (gn << 8) | (gn << 16));
+            C3D_SetScissor(GPU_SCISSOR_NORMAL, sample_scale_ * 4, 4, 236 * sample_scale_, 396);
+            C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ONE, GPU_ONE, GPU_ZERO);
+            for (int tap = 0; tap < 4; tap++) {
+                C3D_DrawArrays(GPU_TRIANGLES, bloom_first + tap * 6, 6);
+            }
+        }
         forget_draw_state();
     }
 

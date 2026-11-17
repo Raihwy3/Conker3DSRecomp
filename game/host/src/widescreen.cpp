@@ -84,11 +84,15 @@ namespace {
     // TEMP-DEBUG: CONKER_CULL_EXTRA widens the frustum and cull scale this much more than
     // the window, to tell whether a missing piece is theirs.
     float cull_extra() {
+#if defined(__arm__) && !defined(CONKER_RT64)
+        return 1.65f;
+#else
         static const float extra = [] {
             const char* value = SDL_getenv("CONKER_CULL_EXTRA");
             return value != nullptr ? std::max(1.0f, (float)std::atof(value)) : 1.0f;
         }();
         return extra;
+#endif
     }
 
     // TEMP-DEBUG: CONKER_NO_CULL_WIDEN leaves the frustum and cull scale at 4:3.
@@ -602,6 +606,20 @@ extern "C" void conker_widen_frustum(uint8_t* rdram, recomp_context* ctx) {
     write_float(rdram, camera, 0x94, -c);
     write_float(rdram, camera, 0x98, 0.0f);
     write_float(rdram, camera, 0x9C, -s);
+#if defined(__arm__) && !defined(CONKER_RT64)
+    const float half_y = read_float(rdram, camera, 0x78) * 0.5f * degrees_to_radians;
+    const float wide_half_y = std::min(std::atan(std::tan(half_y) * 1.45f), 1.45f);
+    const float cy = std::cos(wide_half_y);
+    const float sy = std::sin(wide_half_y);
+    const float sz_top = std::copysign(sy, read_float(rdram, camera, 0xA8));
+    const float sz_bot = std::copysign(sy, read_float(rdram, camera, 0xB4));
+    write_float(rdram, camera, 0xA0, 0.0f);
+    write_float(rdram, camera, 0xA4, -cy);
+    write_float(rdram, camera, 0xA8, sz_top);
+    write_float(rdram, camera, 0xAC, 0.0f);
+    write_float(rdram, camera, 0xB0, cy);
+    write_float(rdram, camera, 0xB4, sz_bot);
+#endif
 }
 
 // func_151103C8 fills the camera's view with its background colour (D_800DBEA8) before it's drawn:
@@ -637,6 +655,10 @@ extern "C" void conker_widen_cull_scale(uint8_t* rdram, recomp_context* ctx) {
     }
     const gpr cull_scale_x = (gpr)(int32_t)0x800D35E0; // cullScaleX_800D35E0
     write_float(rdram, cull_scale_x, 0, read_float(rdram, cull_scale_x, 0) / (ratio * cull_extra()));
+#if defined(__arm__) && !defined(CONKER_RT64)
+    // Also give vertical cullScaleY a margin so skybox cells at top/bottom edges don't pop out.
+    write_float(rdram, cull_scale_x, 4, read_float(rdram, cull_scale_x, 4) / 1.45f);
+#endif
 }
 
 // Some levels' backdrop (sky and distant scenery) is a grid of cells: func_15110CFC splits

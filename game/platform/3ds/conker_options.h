@@ -9,7 +9,7 @@ inline Option options[]={
  {"gyro_sensitivity",100},{"gyro_enabled",0},{"aim_reticle",5},{"aim_reticle_color",1},{"aim_reticle_opacity",40},{"aim_swap_sticks",0},{"aim_lock_on",0},
  {"cutscene_4x3",0},{"model_highest",1},{"hd_textures",1},{"misc_skip_intro",0},
  {"audio_music_vol",100},{"audio_sfx_vol",100},{"audio_voice_vol",100},
- {"misc_skip_cutscene",0},{"misc_photo_mode",0},
+ {"misc_skip_cutscene",0},{"misc_photo_mode",0},{"misc_photo_shortcut",1},
  {"misc_cheat_invincible",0},{"misc_cheat_inf_lives",0},{"misc_cheat_max_cash",0},{"misc_cheat_unlock_all",0}
 };
 inline int get(const char* key,int fallback=0){for(auto& o:options)if(!strcmp(o.key,key))return o.value.load();return fallback;}

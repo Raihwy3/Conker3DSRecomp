@@ -419,6 +419,8 @@ struct Settings {
     // asks for 30, an interpolated frame between each two of the game's.
     int frame_cap = 0;
     int image_filter = 0;           // 0 off, 1 smooth low, 2 smooth high
+    int image_bloom = 0;            // 0 off, 1 on
+    int image_vignette = 0;         // 0 off, 1 low, 2 medium, 3 high
     int supersampling = 0;          // 2x vertical hardware resolve; applied at startup
     // RenderDesc::double_eyes, as the game sets it unless settings.ini says
     // otherwise (read at start; off on an Old 3DS by default).

@@ -175,6 +175,8 @@ int g_audio_mode = 2;
 int g_audio_firmware = 1;
 const char* const kAudioFirmwareNames[] = { "NDSP", "OpenDSP" };
 const char* const kImageFilterNames[] = { "Off", "Smooth low", "Smooth high" };
+const char* const kEffectLevelNames[] = { "Off", "Low", "Medium", "High" };
+const char* const kBloomNames[] = { "Off", "On" };
 const char* const kSampleNames[] = { "Off", "2x" };
 const char* const kAudioNames[] = { "Off", "Low priority", "High priority" };
 void apply_audio(int v) {
@@ -1126,6 +1128,8 @@ void recomp3ds::settings_menu_init(const char* base_path, const GameDesc& desc) 
         add_row({ "audio_mode", "Audio priority", 1, 2, &g_audio_mode, kAudioNames + 1, false, nullptr, apply_audio, recomp3ds::PageCount, 1, nullptr });
         add_row({ "audio_firmware", "DSP backend (restart)", 0, 1, &g_audio_firmware, kAudioFirmwareNames, false, nullptr, nullptr, PageGame, 1, nullptr });
         add_row({ "image_filter", "Screen filter", 0, 2, &st.image_filter, kImageFilterNames, false, nullptr, nullptr, PageGame, 1, nullptr });
+        add_row({ "image_bloom", "Bloom", 0, 1, &st.image_bloom, kBloomNames, false, nullptr, nullptr, PageGame, 1, nullptr });
+        add_row({ "image_vignette", "Vignette", 0, 3, &st.image_vignette, kEffectLevelNames, false, nullptr, nullptr, PageGame, 1, nullptr });
         add_row({ "supersampling", "Supersampling (restart)", 0, 1, &st.supersampling, kSampleNames, false, nullptr, nullptr, PageGame, 1, nullptr });
         st.frame_cap = 1;
     } else add_row({ "audio_mode", "Audio", 0, 2, &g_audio_mode, kAudioNames, false, nullptr, apply_audio, PageGame, 1, nullptr });
