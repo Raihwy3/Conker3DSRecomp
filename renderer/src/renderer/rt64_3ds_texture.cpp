@@ -513,26 +513,28 @@ BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* ban
         }
         if (tp_idx >= 0) {
             const TexPackEntry& tpe = tp.entries[tp_idx];
-            uint32_t pw = pot(tpe.w2), ph = pot(tpe.h2);
+            const uint32_t tp_h2 = tpe.h2 & 0x7FFFu;
+            const GPU_TEXCOLOR tp_fmt = (tpe.h2 & 0x8000u) ? GPU_RGB565 : GPU_RGBA4;
+            uint32_t pw = pot(tpe.w2), ph = pot(tp_h2);
             auto sit = swizzled_cache.find(tp_idx);
             if (sit != swizzled_cache.end()) {
                 swizzled_hit = true;
                 packed_hit = true;
                 wide = false;
-                fmt = GPU_RGBA4;
+                fmt = tp_fmt;
                 potw = pw;
                 poth = ph;
                 src_w = tpe.w2;
-                src_h = tpe.h2;
+                src_h = tp_h2;
                 levels = 1;
             } else {
                 impl_->stage16.assign(pw * ph, 0);
                 if (fseek(tp.fp, (long)tpe.offset, SEEK_SET) == 0) {
                     bool ok = true;
                     if (tpe.w2 == pw) {
-                        ok = (fread(impl_->stage16.data(), 2, (size_t)tpe.w2 * tpe.h2, tp.fp) == (size_t)tpe.w2 * tpe.h2);
+                        ok = (fread(impl_->stage16.data(), 2, (size_t)tpe.w2 * tp_h2, tp.fp) == (size_t)tpe.w2 * tp_h2);
                     } else {
-                        for (uint32_t y = 0; y < tpe.h2; y++) {
+                        for (uint32_t y = 0; y < tp_h2; y++) {
                             if (fread(&impl_->stage16[y * pw], 2, tpe.w2, tp.fp) != tpe.w2) {
                                 ok = false;
                                 break;
@@ -542,11 +544,11 @@ BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* ban
                     if (ok) {
                         packed_hit = true;
                         wide = false;
-                        fmt = GPU_RGBA4;
+                        fmt = tp_fmt;
                         potw = pw;
                         poth = ph;
                         src_w = tpe.w2;
-                        src_h = tpe.h2;
+                        src_h = tp_h2;
                         levels = 1;
                     }
                 }
@@ -601,13 +603,14 @@ BoundTex TextureCache::decode_into(uint64_t key, uint32_t h, const uint32_t* ban
     if (!made && swizzled_hit && tp_idx >= 0 && tp.fp) {
         // Need linear stage16 texels before halve_stage can downsample.
         const TexPackEntry& tpe = tp.entries[tp_idx];
+        const uint32_t tp_h2 = tpe.h2 & 0x7FFFu;
         impl_->stage16.assign(potw * poth, 0);
         if (fseek(tp.fp, (long)tpe.offset, SEEK_SET) == 0) {
             bool ok = true;
             if (tpe.w2 == potw) {
-                ok = (fread(impl_->stage16.data(), 2, (size_t)tpe.w2 * tpe.h2, tp.fp) == (size_t)tpe.w2 * tpe.h2);
+                ok = (fread(impl_->stage16.data(), 2, (size_t)tpe.w2 * tp_h2, tp.fp) == (size_t)tpe.w2 * tp_h2);
             } else {
-                for (uint32_t y = 0; y < tpe.h2; y++) {
+                for (uint32_t y = 0; y < tp_h2; y++) {
                     if (fread(&impl_->stage16[y * potw], 2, tpe.w2, tp.fp) != tpe.w2) { ok = false; break; }
                 }
             }

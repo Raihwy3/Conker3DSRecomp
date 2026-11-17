@@ -38,8 +38,23 @@ extern "C" bool conker_3ds_free_camera_enabled() {
 extern "C" bool conker_3ds_first_person_enabled() {
     return g_first_person_camera.load();
 }
+int g_recenter_button = 1;
+const char* const kRecenterButtonNames[] = { "Off", "ZL", "L", "ZR", "R", "Select" };
+int g_shoulder_swap_button = 1;
+const char* const kShoulderSwapButtonNames[] = { "Off", "ZR", "ZL", "R", "L", "Select" };
 extern "C" bool conker_3ds_shoulder_swap_held() {
-    return (hidKeysHeld() & KEY_ZR) != 0;
+    static constexpr u32 kMasks[] = { 0, KEY_ZR, KEY_ZL, KEY_R, KEY_L, KEY_SELECT };
+    const int idx = g_shoulder_swap_button;
+    if (idx <= 0 || idx >= 6) return false;
+    const u32 held = hidKeysHeld() & ~recomp3ds::settings_menu_keys();
+    return (held & kMasks[idx]) != 0;
+}
+extern "C" bool conker_3ds_recenter_held() {
+    static constexpr u32 kMasks[] = { 0, KEY_ZL, KEY_L, KEY_ZR, KEY_R, KEY_SELECT };
+    const int idx = g_recenter_button;
+    if (idx <= 0 || idx >= 6) return false;
+    const u32 held = hidKeysHeld() & ~recomp3ds::settings_menu_keys();
+    return (held & kMasks[idx]) != 0;
 }
 namespace { void refresh_achievement_labels(); }
 void conker::notices::show(const std::string& text, bool replace) {
@@ -103,6 +118,8 @@ const MenuDefault kDefaults[] = {
     { "perf_monitor", 0 },
     { "log_level", 0 },
     { "free_camera", 1 },
+    { "recenter_button", 1 },
+    { "shoulder_swap_button", 1 },
     { "aim_swap_sticks", 0 },
     { "achievement_popups", 1 },
 };
@@ -180,6 +197,9 @@ void apply_audio_voice_vol(int v){conker3ds::set("audio_voice_vol",v);}
 int g_skip_cutscene=0;
 void apply_skip_cutscene(int v){conker3ds::set("misc_skip_cutscene",v);}
 int g_photo_mode=0;
+extern "C" bool conker_3ds_photo_mode_active() {
+    return g_photo_mode != 0;
+}
 void apply_photo_mode(int v){
     conker3ds::set("misc_photo_mode",v);
     if(v!=0) recomp3ds::screen_conker_set_subnote("Photo: Pad move, C/D look, L/R up/dn, A shot, B exit");
@@ -330,6 +350,10 @@ const MenuOption kOptions[] = {
       apply_achievement_popups, PageGame },
     { "free_camera", "Camera", 0, 2, &g_free_camera_value, kFreeCameraNames,
       apply_free_camera, PageControls },
+    { "recenter_button", "Camera recenter", 0, 5, &g_recenter_button, kRecenterButtonNames,
+      nullptr, PageControls },
+    { "shoulder_swap_button", "Shoulder swap", 0, 5, &g_shoulder_swap_button, kShoulderSwapButtonNames,
+      nullptr, PageControls },
     { "touch_stick", "Touchscreen", 0, 1, &g_touch_mode, kTouchModes,
       input_set_touch_stick_mode, PageControls },
     {"camera_turn_speed","Camera speed",50,300,&value_camera_turn_speed,nullptr,apply_camera_turn_speed,PageControls,5,"%"},
