@@ -24,7 +24,7 @@ int conker_section_for(const char* key,int page) {
     if(!strncmp(key,"camera_",7))return CCamera;
     if(!strcmp(key,"model_highest") || !strcmp(key,"cutscene_4x3") || !strcmp(key,"hd_textures"))return CDisplay;
     if(page==recomp3ds::Page3D)return CStereo;
-    if(!strcmp(key,"frame_cap") || !strcmp(key,"supersampling") || !strncmp(key,"brightness_",11))return CDisplay;
+    if(!strcmp(key,"frame_cap") || !strcmp(key,"wide_800") || !strcmp(key,"supersampling") || !strncmp(key,"brightness_",11))return CDisplay;
     if(!strcmp(key,"image_filter") || !strcmp(key,"image_bloom") || !strcmp(key,"image_vignette"))return CEffects;
     if(!strncmp(key,"audio_",6))return COutput;
     if(!strcmp(key,"touch_stick"))return CTouch;

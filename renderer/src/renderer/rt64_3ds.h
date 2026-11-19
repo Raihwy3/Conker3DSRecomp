@@ -421,6 +421,7 @@ struct Settings {
     int image_filter = 0;           // 0 off, 1 smooth low, 2 smooth high
     int image_bloom = 0;            // 0 off, 1 on
     int image_vignette = 0;         // 0 off, 1 low, 2 medium, 3 high
+    int wide_800 = 0;               // 800x240 wide top-screen mode (disables 3D and supersampling); applied at startup
     int supersampling = 0;          // 2x vertical hardware resolve; applied at startup
     // RenderDesc::double_eyes, as the game sets it unless settings.ini says
     // otherwise (read at start; off on an Old 3DS by default).
@@ -557,6 +558,7 @@ const char* screenshot_name();      // the last one's name, without _top.bmp etc
 
 void show_top_notice(const char* text, uint32_t duration_ms = 6000);
 void show_top_notice_rgba8(const uint32_t* rgba8, int w, int h, uint32_t duration_ms = 6000);
+void set_reticle(bool visible, int style, uint8_t r, uint8_t g, uint8_t b, uint8_t alpha, bool raised);
 
 }   // namespace rt64_3ds
 

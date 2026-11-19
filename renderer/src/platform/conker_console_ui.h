@@ -154,7 +154,7 @@ void record_game_text(const char* text,size_t count) {
             if(end>=count)break;
             int a=0,b=0;char params[40]{};const size_t len=std::min(end-i-2,sizeof(params)-1);memcpy(params,text+i+2,len);
             if(text[end]=='H' || text[end]=='f') {sscanf(params,"%d;%d",&a,&b);g_text_y=std::clamp(a-1,0,29);g_text_x=std::clamp(b-1,0,39);}
-            if(text[end]=='m') {a=atoi(params);g_text_ink=a==33?1:a==31?2:0;}
+            if(text[end]=='m') {a=atoi(params);g_text_ink=a==33?1:a==31?2:a==90?3:0;}
             if(text[end]=='J' && atoi(params)==2)memset(g_game_cells,' ',sizeof(g_game_cells));
             i=end;continue;
         }
@@ -527,15 +527,23 @@ void compose_conker_panel(uint16_t* dest) {
             }else{
                 // Larger touch rows, a restrained gold selection and separate
                 // value controls keep Conker's font/artwork as the visual focus.
+                const bool disabled=g_game_inks[row][2]==3;
                 if(selected)for(int yy=y;yy<y+19;++yy)for(int xx=8;xx<316;++xx)
-                    game_blend(dest,xx,yy,112,82,24,55);
-                if(selected)for(int yy=y+2;yy<y+17;++yy)for(int xx=9;xx<12;++xx)game_blend(dest,xx,yy,255,223,70,190);
-                game_text(dest,line,17,y+4,172,selected?yellow:white);
-                game_text(dest,val,194,y+4,82,selected?yellow:white);
+                    game_blend(dest,xx,yy,disabled?72:112,disabled?72:82,disabled?72:24,disabled?45:55);
+                if(selected)for(int yy=y+2;yy<y+17;++yy)for(int xx=9;xx<12;++xx)
+                    game_blend(dest,xx,yy,disabled?130:255,disabled?130:223,disabled?130:70,190);
+                const uint16_t text_col=disabled?muted:(selected?yellow:white);
+                game_text(dest,line,17,y+4,172,text_col);
+                game_text(dest,val,194,y+4,82,text_col);
                 if(!readonly){
-                    for(int yy=y+3;yy<y+17;++yy){game_blend(dest,279,yy,255,223,70,40);game_blend(dest,299,yy,255,223,70,40);}
-                    if(strcmp(val,"OPEN"))game_text(dest,"<",283,y+4,12,yellow);
-                    game_text(dest,">",304,y+4,12,yellow);
+                    if(!disabled){
+                        for(int yy=y+3;yy<y+17;++yy){game_blend(dest,279,yy,255,223,70,40);game_blend(dest,299,yy,255,223,70,40);}
+                        if(strcmp(val,"OPEN"))game_text(dest,"<",283,y+4,12,yellow);
+                        game_text(dest,">",304,y+4,12,yellow);
+                    }else{
+                        game_text(dest,"<",283,y+4,12,muted);
+                        game_text(dest,">",304,y+4,12,muted);
+                    }
                 }
             }
         }

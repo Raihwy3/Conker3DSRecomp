@@ -325,12 +325,19 @@ int page_count(int page) {
 bool visible(int slot) { return slot >= g_top && slot < g_top + kSlots; }
 int slot_line(int slot) { return kFirstRow + (slot - g_top) * kRowStep; }
 
+bool is_row_disabled(const Row& r) {
+    return rt64_3ds::settings().wide_800 != 0 &&
+           (r.page == recomp3ds::Page3D || strcmp(r.key, "supersampling") == 0);
+}
+
 void draw_row(int slot) {
     int idx[kMaxRows];
     if (slot < 0 || slot >= page_rows(g_page, idx) || !visible(slot)) return;
     const Row& r = g_rows[idx[slot]];
+    const bool dis = is_row_disabled(r);
     char val[24];
-    if (r.names != nullptr) snprintf(val, sizeof(val), "%s", r.names[*r.value - r.lo]);
+    if (dis && strcmp(r.key, "supersampling") == 0) snprintf(val, sizeof(val), "Off");
+    else if (r.names != nullptr) snprintf(val, sizeof(val), "%s", r.names[*r.value - r.lo]);
     else if (*r.value == 0 && r.zero_text != nullptr) snprintf(val, sizeof(val), "%s", r.zero_text);
     else if (r.tenths) snprintf(val, sizeof(val), "%d.%d", *r.value / 10, *r.value % 10);
     else snprintf(val, sizeof(val), "%d%s", *r.value, r.suffix != nullptr ? r.suffix : "");
@@ -346,13 +353,16 @@ void draw_row(int slot) {
     const char* label=r.label;
     if (recomp3ds::screen_conker_theme()) {
         if (!strcmp(r.key,"audio_firmware")) label="DSP backend";
+        if (!strcmp(r.key,"wide_800")) label="HighRes";
         if (!strcmp(r.key,"supersampling")) label="Supersampling";
         if (!strcmp(r.key,"brightness_top")) label="Top brightness";
         if (!strcmp(r.key,"brightness_bottom")) label="Bottom brightness";
     }
-    recomp3ds::screen_printf("\x1b[%d;0H%s%s %-*.*s %-*.*s\x1b[0m", slot_line(slot), sel ? "\x1b[33m" : "", sel ? ">" : " ",
+    const char* col = dis ? "\x1b[90m" : (sel ? "\x1b[33m" : "");
+    recomp3ds::screen_printf("\x1b[%d;0H%s%s %-*.*s %-*.*s\x1b[0m", slot_line(slot), col, sel ? ">" : " ",
            lw, lw, label, vw, vw, val);
-    if (recomp3ds::screen_conker_theme() && strncmp(r.key, "ach_", 4) != 0) recomp3ds::screen_printf("\x1b[33m< >\x1b[0m");
+    if (recomp3ds::screen_conker_theme() && strncmp(r.key, "ach_", 4) != 0)
+        recomp3ds::screen_printf("%s< >\x1b[0m", dis ? "\x1b[90m" : "\x1b[33m");
 }
 
 void draw_tabs() {
@@ -438,7 +448,7 @@ void draw_page() {
     if (g_top > 0) recomp3ds::screen_printf("\x1b[%d;%dH^ more", kMoreRow, kMoreUpCol);
     if (g_top + kSlots < n) recomp3ds::screen_printf("\x1b[%d;%dHv more", kMoreRow, kMoreDownCol);
     if(recomp3ds::screen_conker_theme()) {
-        if(g_conker_section==CDisplay)recomp3ds::screen_printf("\x1b[%d;0HRestart: supersampling",kLastRow);
+        if(g_conker_section==CDisplay)recomp3ds::screen_printf("\x1b[%d;0HRestart: HighRes / supersampling",kLastRow);
         if(g_conker_section==COutput)recomp3ds::screen_printf("\x1b[%d;0HRestart: DSP backend",kLastRow);
         if(g_conker_section==CAchievements){
             int idx[kMaxRows], unlocked=0;
@@ -644,6 +654,7 @@ void step(int slot, int d) {
     int idx[kMaxRows];
     if (slot < 0 || slot >= page_rows(g_page, idx)) return;
     Row& r = g_rows[idx[slot]];
+    if (is_row_disabled(r)) return;
     int v = *r.value + d * r.step;
     if (r.names != nullptr) v = v < r.lo ? r.hi : v > r.hi ? r.lo : v;
     else v = v < r.lo ? r.lo : v > r.hi ? r.hi : v;
@@ -656,7 +667,8 @@ void step(int slot, int d) {
     if (r.on_change != nullptr) r.on_change(v);
     if (r.on_change_ctx != nullptr) r.on_change_ctx(r.ctx, v);
     if (!r.no_save) changed();
-    draw_row(slot);
+    if (strcmp(r.key, "wide_800") == 0) draw_page();
+    else draw_row(slot);
 }
 
 void apply_control_preset(void*,int preset) {
@@ -1130,6 +1142,7 @@ void recomp3ds::settings_menu_init(const char* base_path, const GameDesc& desc) 
         add_row({ "image_filter", "Screen filter", 0, 2, &st.image_filter, kImageFilterNames, false, nullptr, nullptr, PageGame, 1, nullptr });
         add_row({ "image_bloom", "Bloom", 0, 1, &st.image_bloom, kBloomNames, false, nullptr, nullptr, PageGame, 1, nullptr });
         add_row({ "image_vignette", "Vignette", 0, 3, &st.image_vignette, kEffectLevelNames, false, nullptr, nullptr, PageGame, 1, nullptr });
+        add_row({ "wide_800", "HighRes (restart)", 0, 1, &st.wide_800, kBloomNames, false, nullptr, nullptr, PageGame, 1, nullptr });
         add_row({ "supersampling", "Supersampling (restart)", 0, 1, &st.supersampling, kSampleNames, false, nullptr, nullptr, PageGame, 1, nullptr });
         st.frame_cap = 1;
     } else add_row({ "audio_mode", "Audio", 0, 2, &g_audio_mode, kAudioNames, false, nullptr, apply_audio, PageGame, 1, nullptr });

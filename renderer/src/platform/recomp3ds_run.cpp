@@ -1212,6 +1212,17 @@ int recomp3ds::run(const GameDesc& initial_desc) {
     recomp3ds::input_set_map(desc.button_map, desc.button_map_count);
     recomp3ds::input_set_controller_pak(desc.controller_pak);
     recomp3ds::settings_menu_init(g_base_path, desc);
+    if (rt64_3ds::settings().wide_800 != 0) {
+        gfxSetWide(true);
+        for (int buffer = 0; buffer < 2; ++buffer) {
+            u16 w = 0, h = 0;
+            u8* pixels = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &w, &h);
+            if (pixels) memset(pixels, 0, (size_t)w * h * 3);
+            gfxFlushBuffers();
+            gfxSwapBuffers();
+            gspWaitForVBlank();
+        }
+    }
     {
         // dbg_slow_gfx_ms / dbg_slow_audio_ms: pad every display list and
         // audio task, to mimic a slower console in the emulator.

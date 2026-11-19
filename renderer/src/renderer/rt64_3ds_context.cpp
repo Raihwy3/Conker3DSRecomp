@@ -131,6 +131,7 @@ uint32_t g_toast_seq = 0;
 std::string g_toast_text;
 std::vector<uint32_t> g_toast_rgba8;
 int g_toast_w = 0, g_toast_h = 0;
+std::atomic<uint64_t> g_reticle_state{ 0 };
 
 void ensure_toast_lock() {
     if (!g_toast_lock_ok.exchange(true)) LightLock_Init(&g_toast_lock);
@@ -1313,6 +1314,15 @@ private:
         LightLock_Init(&g_gpu_lock);
         g_gpu_lock_ready = true;
         aptHook(&g_apt_post_cookie, apt_post_hook, nullptr);   // before citro3d's: runs after it
+        wide_800_ = rt64_3ds::settings().wide_800 != 0;
+        top_h_ = wide_800_ ? 800 : 400;
+        horiz_scale_ = wide_800_ ? 2 : 1;
+        if (wide_800_) {
+            gfxSetWide(true);
+        } else {
+            gfxSetWide(false);
+            gfxSet3D(false);
+        }
         if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 2)) {
             aptUnhook(&g_apt_post_cookie);
             g_gpu_lock_ready = false;
@@ -1348,17 +1358,28 @@ private:
         depth16_ = rt64_3ds::render_desc().eye_depth16;
         const GPU_COLORBUF eye_color = color16_ ? GPU_RB_RGB565 : GPU_RB_RGBA8;
         const GPU_DEPTHBUF eye_depth = depth16_ ? GPU_RB_DEPTH16 : GPU_RB_DEPTH24_STENCIL8;
-        sample_scale_ = rt64_3ds::settings().supersampling ? 2 : 1;
+        sample_scale_ = (!wide_800_ && rt64_3ds::settings().supersampling) ? 2 : 1;
         auto make_eyes = [&] {
-            top_ = C3D_RenderTargetCreate(240 * sample_scale_, 400, eye_color, eye_depth);
-            top_r_ = C3D_RenderTargetCreate(240 * sample_scale_, 400, eye_color, eye_depth);
-            black_ = C3D_RenderTargetCreate(240 * sample_scale_, 400, eye_color, C3D_DEPTHTYPE(-1));
-            if (sample_scale_ == 2) {
+            top_ = C3D_RenderTargetCreate(240 * sample_scale_, top_h_, eye_color, eye_depth);
+            top_r_ = wide_800_ ? nullptr : C3D_RenderTargetCreate(240 * sample_scale_, 400, eye_color, eye_depth);
+            black_ = C3D_RenderTargetCreate(240 * sample_scale_, top_h_, eye_color, C3D_DEPTHTYPE(-1));
+            if (sample_scale_ == 2 || wide_800_) {
                 resolve_target_ = C3D_RenderTargetCreate(240, 400, eye_color, C3D_DEPTHTYPE(-1));
-                resolve_linear_ = linearAlloc(240 * 400 * (color16_ ? 2 : 4));
+                resolve_linear_ = linearAlloc(240 * top_h_ * (color16_ ? 2 : 4));
             }
         };
         make_eyes();
+        if (wide_800_ && (!top_ || !black_)) {
+            for (auto* t : {top_, top_r_, black_, resolve_target_}) if (t) C3D_RenderTargetDelete(t);
+            top_ = top_r_ = black_ = resolve_target_ = nullptr;
+            if (resolve_linear_) linearFree(resolve_linear_);
+            resolve_linear_ = nullptr;
+            wide_800_ = false;
+            top_h_ = 400;
+            horiz_scale_ = 1;
+            fprintf(stderr, "rt64-3ds: insufficient VRAM for 800p mode; using standard resolution\n");
+            make_eyes();
+        }
         if (sample_scale_ == 2 && (!top_ || !top_r_ || !black_ || !resolve_target_ || !resolve_linear_)) {
             for (auto* t : {top_, top_r_, black_, resolve_target_}) if (t) C3D_RenderTargetDelete(t);
             top_ = top_r_ = black_ = resolve_target_ = nullptr;
@@ -1377,9 +1398,11 @@ private:
         C3D_RenderTargetSetOutput(top_, GFX_TOP, GFX_LEFT, transfer_flags_);
         if (top_r_) C3D_RenderTargetSetOutput(top_r_, GFX_TOP, GFX_RIGHT, transfer_flags_);
         cur_eye_[0] = last_eye_[0] = top_; cur_eye_[1] = last_eye_[1] = top_r_;
-        fprintf(stderr, "rt64-3ds: render resolution 400x%d -> 400x240 (%s)\n", 240 * sample_scale_, sample_scale_ == 2 ? "2x supersampling" : "native");
+        fprintf(stderr, "rt64-3ds: render resolution %dx%d -> %dx240 (%s)\n",
+                top_h_, 240 * sample_scale_, top_h_,
+                wide_800_ ? "800p wide" : sample_scale_ == 2 ? "2x supersampling" : "native");
         if (rt64_3ds::render_desc().screen_filters) {
-            post_ok_ = C3D_TexInit(&post_tex_, 256, 512, color16_ ? GPU_RGB565 : GPU_RGBA8);
+            post_ok_ = C3D_TexInit(&post_tex_, 256, wide_800_ ? 1024 : 512, color16_ ? GPU_RGB565 : GPU_RGBA8);
             if (post_ok_) { C3D_TexSetFilter(&post_tex_, GPU_LINEAR, GPU_LINEAR); C3D_TexSetWrap(&post_tex_, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE); }
         }
         if (rt64_3ds::render_desc().hud_on_bottom_supported) init_bottom();
@@ -1388,6 +1411,13 @@ private:
             memset(toast_tex_.data, 0, 256 * 64 * 4);
             flush_dcache(toast_tex_.data, 256 * 64 * 4);
             C3D_TexSetFilter(&toast_tex_, GPU_NEAREST, GPU_NEAREST);
+        }
+        reticle_tex_ok_ = C3D_TexInit(&reticle_tex_, 64, 64, GPU_RGBA8);
+        if (reticle_tex_ok_) {
+            memset(reticle_tex_.data, 0, 64 * 64 * 4);
+            flush_dcache(reticle_tex_.data, 64 * 64 * 4);
+            C3D_TexSetFilter(&reticle_tex_, GPU_LINEAR, GPU_LINEAR);
+            C3D_TexSetWrap(&reticle_tex_, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
         }
         fprintf(stderr, "rt64-3ds: eye targets: %s colour, %s depth (VRAM left %u KB)\n", color16_ ? "RGB565" : "RGBA8",
                 depth16_ ? "16-bit" : "24-bit + stencil", (unsigned)(vramSpaceFree() / 1024));
@@ -1398,10 +1428,9 @@ private:
         // dbg_frame_trace_from / _count: a log line per replayed frame.
         frame_trace_first_ = rt64_3ds::settings().dbg_frame_trace_from;
         frame_trace_count_ = rt64_3ds::settings().dbg_frame_trace_count;
-        depth_copy_bytes_ = C3D_CalcDepthBufSize(240 * sample_scale_, 400, eye_depth);
+        depth_copy_bytes_ = C3D_CalcDepthBufSize(240 * sample_scale_, top_h_, eye_depth);
         depth_copy_ = (u8*)linearAlloc(depth_copy_bytes_);
         fprintf(stderr, "rt64-3ds: depth read %s\n", depth_copy_ != nullptr ? "from a GPU copy in linear memory" : "from VRAM");
-        gfxSet3D(false);
 
         dvlb_ = DVLB_ParseFile((u32*)rt64_3ds_shbin, rt64_3ds_shbin_size);
         shaderProgramInit(&prog_);
@@ -1785,13 +1814,15 @@ private:
         std::vector<uint32_t> toast_rgba8;
         int toast_w = 0, toast_h = 0;
         const bool toast_on = !offscreen_frame && toast_tex_ok_ && n + 54 <= kVboVerts && toast_snapshot(toast_seq, toast_text, toast_rgba8, toast_w, toast_h);
+        const uint64_t ret_packed = (!offscreen_frame && reticle_tex_ok_ && n + 12 <= kVboVerts) ? reticle_snapshot() : 0;
+        const bool reticle_on = (ret_packed & 1ULL) != 0;
         // The right eye from the left eye's commands: the left eye's draws
         // are a command list of their own (they set all their state
         // themselves, from caches emptied at its start), queued a second time
         // after the right eye's target and sign. Not for frames that draw
         // into other targets between the eyes' draws (off-screen images, the
         // frame copy), nor in the GPU debug mode.
-        bool eye_replay = eyes == 2 && !split && !(debug_frame && debug_sync_) && !post && !vignette;
+        bool eye_replay = eyes == 2 && !split && !(debug_frame && debug_sync_) && !post && !vignette && !reticle_on;
         bool has_rtt_draws = false;
         for (const rt64_3ds::DrawRecord& d : frame_.draws) if (d.rtt >= 0) { has_rtt_draws = true; break; }
         if (has_rtt_draws) eye_replay = false;
@@ -1992,6 +2023,7 @@ private:
         if (ghost && sfd.on && !offscreen_frame) ghost_pass((uint32_t)n);
         if (post) post_pass((uint32_t)n + 12, (uint32_t)n + 54, cur_eye_[pass]);
         if (vignette) vignette_pass((uint32_t)n + 78);
+        if (reticle_on) draw_reticle(cur_eye_[pass], vb + n + 6, (uint32_t)(n + 6), ret_packed);
         if (toast_on) draw_toast(cur_eye_[pass], vb + n + 48, (uint32_t)(n + 48), toast_seq, toast_text, toast_rgba8, toast_w, toast_h);
         }   // eye passes
         // dbg_frame_trace_from / _count: the replay's decisions, a line a
@@ -2883,7 +2915,7 @@ private:
             // Checked once the copy has finished: out of a frame citro3d
             // returns before it does on the console (gspWaitForPPF sees the
             // last frame's display transfer); C3D_FrameBegin waits for it.
-            check_snapshot_ = sample_scale_ == 1 && snapshots_ <= 3;
+            check_snapshot_ = sample_scale_ == 1 && !wide_800_ && snapshots_ <= 3;
         }
     }
 
@@ -2960,21 +2992,34 @@ private:
         return -1;
     }
 
+    bool wide_800_ = false;
+    int top_h_ = 400;
+    int horiz_scale_ = 1;
     int sample_scale_ = 1;
     C3D_RenderTarget* resolve_target_ = nullptr;
     void* resolve_linear_ = nullptr;
     C3D_Tex post_tex_{};
     bool post_ok_ = false;
     C3D_RenderTarget* native_eye(C3D_RenderTarget* source) {
-        if (sample_scale_ == 1 || !resolve_target_) return source;
+        if ((sample_scale_ == 1 && !wide_800_) || !resolve_target_ || !resolve_linear_) return source;
         const u32 fmt = color16_ ? GX_TRANSFER_FMT_RGB565 : GX_TRANSFER_FMT_RGBA8;
         // OUT_TILED also chooses a linear input. A tiled render buffer
         // therefore needs two ordered transfers: downsample to linear, then
         // retile. Treating the tiled source as linear makes vertical stripes.
         const u32 base = GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_RAW_COPY(0) |
             GX_TRANSFER_IN_FORMAT(fmt) | GX_TRANSFER_OUT_FORMAT(fmt);
-        C3D_SyncDisplayTransfer((u32*)source->frameBuf.colorBuf, GX_BUFFER_DIM(480, 400),
-            (u32*)resolve_linear_, GX_BUFFER_DIM(480, 400), base | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_X));
+        if (wide_800_) {
+            const u32 bpp = color16_ ? 2 : 4;
+            C3D_SyncDisplayTransfer((u32*)source->frameBuf.colorBuf, GX_BUFFER_DIM(240, 800),
+                (u32*)resolve_linear_, GX_BUFFER_DIM(240, 800), base | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
+            GSPGPU_InvalidateDataCache(resolve_linear_, 240 * 800 * bpp);
+            uint8_t* p = (uint8_t*)resolve_linear_;
+            for (int r = 1; r < 400; r++) memcpy(p + (size_t)r * 240 * bpp, p + (size_t)(r * 2) * 240 * bpp, 240 * bpp);
+            flush_dcache(resolve_linear_, 240 * 400 * bpp);
+        } else {
+            C3D_SyncDisplayTransfer((u32*)source->frameBuf.colorBuf, GX_BUFFER_DIM(480, 400),
+                (u32*)resolve_linear_, GX_BUFFER_DIM(480, 400), base | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_X));
+        }
         C3D_SyncDisplayTransfer((u32*)resolve_linear_, GX_BUFFER_DIM(240, 400),
             (u32*)resolve_target_->frameBuf.colorBuf, GX_BUFFER_DIM(240, 400), base | GX_TRANSFER_OUT_TILED(1));
         return resolve_target_;
@@ -2996,18 +3041,20 @@ private:
         const float x[6] = {l,r,r,l,r,l}, y[6] = {0,0,bot,0,bot,bot};
         // Centre, four one-pixel neighbours, and a centre copy for the border.
         const float du[6] = {0,1,-1,0,0,0}, dv[6] = {0,0,0,1,-1,0};
+        const float tex_h = wide_800_ ? 1024.0f : 512.0f;
         for (int tap = 0; tap < 6; tap++) for (int v = 0; v < 6; v++) {
-            const float sx = (x[v] + geo_.x0) * geo_.scale_x, sy = y[v] * geo_.scale;
-            q[tap*6+v] = GpuVertex{x[v],y[v],0,1,240-sy+du[tap],512-sx+dv[tap],255,255,255,255};
+            const float sx = (x[v] + geo_.x0) * geo_.scale_x * (float)horiz_scale_, sy = y[v] * geo_.scale;
+            q[tap*6+v] = GpuVertex{x[v],y[v],0,1,240-sy+du[tap],tex_h-sx+dv[tap],255,255,255,255};
         }
     }
     void write_bloom_quads(GpuVertex* q) {
         const float l = -geo_.x0, r = (float)geo_.w + geo_.x0, bot = (float)geo_.h;
         const float x[6] = {l,r,r,l,r,l}, y[6] = {0,0,bot,0,bot,bot};
         const float du[4] = {-3.5f, 3.5f, -3.5f, 3.5f}, dv[4] = {-3.5f, -3.5f, 3.5f, 3.5f};
+        const float tex_h = wide_800_ ? 1024.0f : 512.0f;
         for (int tap = 0; tap < 4; tap++) for (int v = 0; v < 6; v++) {
-            const float sx = (x[v] + geo_.x0) * geo_.scale_x, sy = y[v] * geo_.scale;
-            q[tap*6+v] = GpuVertex{x[v],y[v],0,1,240-sy+du[tap],512-sx+dv[tap],255,255,255,255};
+            const float sx = (x[v] + geo_.x0) * geo_.scale_x * (float)horiz_scale_, sy = y[v] * geo_.scale;
+            q[tap*6+v] = GpuVertex{x[v],y[v],0,1,240-sy+du[tap],tex_h-sx+dv[tap],255,255,255,255};
         }
     }
     void write_vignette_ring(GpuVertex* q, int level) {
@@ -3053,16 +3100,17 @@ private:
         // Finish scene draws before copying their colour. Queue ordering keeps
         // the copy and subsequent sampling behind those draws on the GPU.
         C3D_FrameSplit(GX_CMDLIST_FLUSH);
-        C3D_RenderTarget* src = native_eye(target);
+        C3D_RenderTarget* src = wide_800_ ? target : native_eye(target);
         const u32 bpp = color16_ ? 2 : 4, row = 240*8*bpp, gap = 16*8*bpp;
         C3D_SyncTextureCopy((u32*)src->frameBuf.colorBuf, GX_BUFFER_DIM(row/16,0),
-            (u32*)post_tex_.data, GX_BUFFER_DIM(row/16,gap/16), 240*400*bpp, BIT(3));
+            (u32*)post_tex_.data, GX_BUFFER_DIM(row/16,gap/16), 240*top_h_*bpp, BIT(3));
         draw_on(target);
         set_cull(GPU_CULL_NONE);
         C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,u_xform_,&proj_);
         C3D_FVUnifSet(GPU_VERTEX_SHADER,u_stereo_,0,0,0,0);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER,u_uvscale_,1.0f/256,1.0f/512,0,0);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER,u_uv1_,1.0f/256,1.0f/512,0,0);
+        const float tex_h = wide_800_ ? 1024.0f : 512.0f;
+        C3D_FVUnifSet(GPU_VERTEX_SHADER,u_uvscale_,1.0f/256,1.0f/tex_h,0,0);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER,u_uv1_,1.0f/256,1.0f/tex_h,0,0);
         C3D_TexBind(0,&post_tex_); C3D_TexBind(1,&white_); C3D_TexBind(2,&white_);
         C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
         C3D_AlphaTest(false,GPU_ALWAYS,0);
@@ -3076,7 +3124,7 @@ private:
             C3D_TexEnvSrc(e,C3D_Alpha,GPU_CONSTANT,GPU_CONSTANT,GPU_CONSTANT);
             C3D_TexEnvFunc(e,C3D_Alpha,GPU_REPLACE);
             const bool strong=filter_lv==2;
-            C3D_SetScissor(GPU_SCISSOR_NORMAL,sample_scale_,1,239*sample_scale_,399);
+            C3D_SetScissor(GPU_SCISSOR_NORMAL,sample_scale_,horiz_scale_,239*sample_scale_,top_h_-horiz_scale_);
             for(int tap=0;tap<5;tap++) {
                 const u32 weight=tap==0?(strong?127:191):(strong?32:16);
                 C3D_TexEnvColor(C3D_GetTexEnv(0),0xff000000u|weight|(weight<<8)|(weight<<16));
@@ -3085,7 +3133,7 @@ private:
             }
             // Preserve the original outer pixel. Neighbour taps there would read
             // the unused power-of-two padding beyond the image.
-            C3D_SetScissor(GPU_SCISSOR_INVERT,sample_scale_,1,239*sample_scale_,399);
+            C3D_SetScissor(GPU_SCISSOR_INVERT,sample_scale_,horiz_scale_,239*sample_scale_,top_h_-horiz_scale_);
             C3D_TexEnvColor(C3D_GetTexEnv(0),0xffffffffu);
             C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_ONE,GPU_ZERO,GPU_ONE,GPU_ZERO);
             C3D_DrawArrays(GPU_TRIANGLES,first+30,6);
@@ -3107,7 +3155,7 @@ private:
             C3D_TexEnvSrc(e1, C3D_Alpha, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
             C3D_TexEnvFunc(e1, C3D_Alpha, GPU_REPLACE);
             C3D_TexEnvColor(e1, 0xFF000000u | gn | (gn << 8) | (gn << 16));
-            C3D_SetScissor(GPU_SCISSOR_NORMAL, sample_scale_ * 4, 4, 236 * sample_scale_, 396);
+            C3D_SetScissor(GPU_SCISSOR_NORMAL, sample_scale_ * 4, 4 * horiz_scale_, 236 * sample_scale_, top_h_ - 4 * horiz_scale_);
             C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ONE, GPU_ONE, GPU_ZERO);
             for (int tap = 0; tap < 4; tap++) {
                 C3D_DrawArrays(GPU_TRIANGLES, bloom_first + tap * 6, 6);
@@ -3400,7 +3448,8 @@ private:
         // wrapped to the whole target: one pixel past any target instead.
         if (x1 <= x0 || y1 <= y0) C3D_SetScissor(GPU_SCISSOR_NORMAL, 1023, 1023, 1024, 1024);
         else { const u32 scale = frame_viewport_ ? 1 : sample_scale_;
-            C3D_SetScissor(GPU_SCISSOR_NORMAL, (u32)(240 - y1) * scale, (u32)(400 - x1) + fy, (u32)(240 - y0) * scale, (u32)(400 - x0) + fy); }
+            const u32 hscale = frame_viewport_ ? 1 : horiz_scale_;
+            C3D_SetScissor(GPU_SCISSOR_NORMAL, (u32)(240 - y1) * scale, (u32)(400 - x1) * hscale + fy, (u32)(240 - y0) * scale, (u32)(400 - x0) * hscale + fy); }
         prof_[2] += tick() - tp2;
     }
 
@@ -3634,7 +3683,7 @@ public:
             };
         };
         const char* suffix[3] = { "_top.bmp", "_top_right.bmp", "_bottom.bmp" };
-        job->file[0] = make_bmp(400, 240, &job->bytes[0], eye(last_eye_[0]));
+        job->file[0] = make_bmp(top_h_, 240, &job->bytes[0], eye(last_eye_[0]));
         if (s3d_on_ && last_eye_[1] != nullptr) job->file[1] = make_bmp(400, 240, &job->bytes[1], eye(last_eye_[1]));
         {
             // The touch screen: libctru's framebuffer, linear, tilted like
@@ -3742,7 +3791,7 @@ public:
     float read_depth_zp(int sx, int sy) const {
         if (sx < 0) sx = 0; if (sx > 399) sx = 399;
         if (sy < 0) sy = 0; if (sy > 239) sy = 239;
-        const int r = sx, c = (239 - sy) * sample_scale_ + sample_scale_ / 2;
+        const int r = sx * horiz_scale_, c = (239 - sy) * sample_scale_ + sample_scale_ / 2;
         const uint32_t tile = (uint32_t)(r >> 3) * (30 * sample_scale_) + (uint32_t)(c >> 3);
         const uint32_t mo = (c & 1) | ((r & 1) << 1) | ((c & 2) << 1) | ((r & 2) << 2) | ((c & 4) << 2) | ((r & 4) << 3);
         const void* buf = depth_read_ != nullptr ? depth_read_ : top_->frameBuf.depthBuf;
@@ -3898,7 +3947,7 @@ public:
         const rt64_3ds::Settings& st = rt64_3ds::settings();
         slider_ = osGet3DSliderState();
         sf.sep = (float)st.sep_slider * 0.002f * slider_ * st.slider_gain;
-        sf.on = top_r_ != nullptr && slider_ > 0.001f && sf.sep > 0.0f && !vi_blanked_;
+        sf.on = !wide_800_ && top_r_ != nullptr && slider_ > 0.001f && sf.sep > 0.0f && !vi_blanked_;
         if (sf.on != s3d_on_) {
             gfxSet3D(sf.on);
             s3d_on_ = sf.on;
@@ -4489,12 +4538,12 @@ public:
     // presenter thread, the single set as ever.
     void init_double_eyes(GPU_COLORBUF color, GPU_DEPTHBUF depth) {
         const u32 free0 = vramSpaceFree();
-        const u32 need = (top_r_ != nullptr ? 2 : 1) * (C3D_CalcColorBufSize(240, 400, color) + C3D_CalcDepthBufSize(240, 400, depth));
+        const u32 need = (top_r_ != nullptr ? 2 : 1) * (C3D_CalcColorBufSize(240, top_h_, color) + C3D_CalcDepthBufSize(240, top_h_, depth));
         const char* why = nullptr;
         if (presenter_ == nullptr) why = "no presenter thread";
         else if ((dbuf_ = (u32*)linearAlloc(kDeferBytes)) == nullptr) why = "no linear memory for the command buffer";
         else {
-            inb_l_ = C3D_RenderTargetCreate(240, 400, color, depth);
+            inb_l_ = C3D_RenderTargetCreate(240, top_h_, color, depth);
             if (inb_l_ != nullptr && top_r_ != nullptr) inb_r_ = C3D_RenderTargetCreate(240, 400, color, depth);
             if (inb_l_ == nullptr || (top_r_ != nullptr && inb_r_ == nullptr)) {
                 if (inb_l_ != nullptr) C3D_RenderTargetDelete(inb_l_);
@@ -4615,6 +4664,9 @@ public:
     bool con_tex_ok_ = false;
     C3D_Tex toast_tex_{};           // top-screen bottom-right notification toast, 256x64 RGBA4
     bool toast_tex_ok_ = false;
+    C3D_Tex reticle_tex_{};         // top-screen anti-aliased SDF reticle, 64x64 RGBA8
+    bool reticle_tex_ok_ = false;
+    uint32_t reticle_key_ = 0;
     uint32_t toast_drawn_seq_ = 0;
     bool bottom_shown_ = false;     // the last game frame drew it
     uint32_t bottom_hash_ = 0;
@@ -4863,6 +4915,126 @@ public:
             C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
         }
         C3D_TexBind(0, &toast_tex_);
+        C3D_TexBind(1, &white_);
+        C3D_TexBind(2, &white_);
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+        C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+        C3D_AlphaTest(false, GPU_ALWAYS, 0);
+        C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+        C3D_DrawArrays(GPU_TRIANGLES, first, 6);
+        forget_draw_state();
+    }
+    static uint64_t reticle_snapshot() {
+        return g_reticle_state.load(std::memory_order_relaxed);
+    }
+    void draw_reticle(C3D_RenderTarget* target, GpuVertex* q, uint32_t first, uint64_t packed) {
+        const int style = (int)((packed >> 1) & 0xF);
+        const bool raised = ((packed >> 5) & 1) != 0;
+        const uint8_t cr = (uint8_t)((packed >> 8) & 0xFF);
+        const uint8_t cg = (uint8_t)((packed >> 16) & 0xFF);
+        const uint8_t cb = (uint8_t)((packed >> 24) & 0xFF);
+        const uint8_t ca = (uint8_t)((packed >> 32) & 0xFF);
+        if (!reticle_tex_ok_ || style <= 0 || style > 7 || ca == 0) return;
+        const uint32_t key = ((uint32_t)style << 24) | ((uint32_t)cr << 16) | ((uint32_t)cg << 8) | cb;
+        if (key != reticle_key_) {
+            reticle_key_ = key;
+            uint32_t* dst = (uint32_t*)reticle_tex_.data;
+            constexpr int kN = 64, kTilesX = 8;
+            auto put_px8 = [&](int x, int y, uint32_t c) {
+                const int yd = (kN - 1) - y;
+                const unsigned mx = (x & 1) | ((x & 2) << 1) | ((x & 4) << 2);
+                const unsigned my = ((yd & 1) << 1) | ((yd & 2) << 2) | ((yd & 4) << 3);
+                dst[((yd >> 3) * kTilesX + (x >> 3)) * 64 + (my | mx)] = c;
+            };
+            auto sd_box = [](float px, float py, float bx, float by) -> float {
+                const float dx = std::fabs(px) - bx, dy = std::fabs(py) - by;
+                const float ox = std::max(dx, 0.0f), oy = std::max(dy, 0.0f);
+                return std::hypot(ox, oy) + std::min(std::max(dx, dy), 0.0f);
+            };
+            auto smooth = [](float edge0, float edge1, float x) -> float {
+                const float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+                return t * t * (3.0f - 2.0f * t);
+            };
+            for (int y = 0; y < kN; y++) {
+                for (int x = 0; x < kN; x++) {
+                    const float px = (float)x - 31.5f;
+                    const float py = (float)y - 31.5f;
+                    const float r = std::hypot(px, py);
+                    float d = 100.0f;
+                    if (style == 1) {
+                        d = r - 5.2f;
+                    } else if (style == 2 || style == 3 || style == 6) {
+                        const float dl = sd_box(px + 15.5f, py, 6.8f, 1.9f);
+                        const float dr = sd_box(px - 15.5f, py, 6.8f, 1.9f);
+                        const float db = sd_box(px, py - 15.5f, 1.9f, 6.8f);
+                        d = std::min(std::min(dl, dr), db);
+                        if (style != 6) {
+                            const float dt = sd_box(px, py + 15.5f, 1.9f, 6.8f);
+                            d = std::min(d, dt);
+                        }
+                        if (style == 3) {
+                            d = std::min(d, r - 3.3f);
+                        }
+                    } else if (style == 4 || style == 5) {
+                        d = std::fabs(r - 17.5f) - 2.1f;
+                        if (style == 5) {
+                            d = std::min(d, r - 3.3f);
+                        }
+                    } else if (style == 7) {
+                        const float man = (std::fabs(px) + std::fabs(py)) * 0.70710678f;
+                        d = std::fabs(man - 13.5f) - 2.1f;
+                    }
+                    const float fill_a = 1.0f - smooth(-1.2f, 1.2f, d);
+                    const float out_a  = (1.0f - smooth(-1.2f, 1.2f, d - 2.6f)) * 0.78f;
+                    const float comb_a = fill_a + out_a * (1.0f - fill_a);
+                    uint8_t r8 = 0, g8 = 0, b8 = 0, a8 = 0;
+                    if (comb_a > 0.002f) {
+                        const float w = fill_a / comb_a;
+                        r8 = (uint8_t)std::lround((float)cr * w);
+                        g8 = (uint8_t)std::lround((float)cg * w);
+                        b8 = (uint8_t)std::lround((float)cb * w);
+                        a8 = (uint8_t)std::lround(comb_a * 255.0f);
+                    }
+                    put_px8(x, y, ((uint32_t)r8 << 24) | ((uint32_t)g8 << 16) | ((uint32_t)b8 << 8) | a8);
+                }
+            }
+            flush_dcache(dst, kN * kN * 4);
+        }
+        draw_on(target);
+        cur_target_ = kFrameTarget;
+        frame_viewport_ = false;
+        set_cull(GPU_CULL_NONE);
+        const float total_w = (float)geo_.w + 2.0f * geo_.x0;
+        const float sx = total_w / 400.0f;
+        const float sy = (float)geo_.h / 240.0f;
+        const float cx = (total_w * 0.5f) - geo_.x0;
+        const float cy = (float)geo_.h * (raised ? 0.30f : 0.50f);
+        const float hw = 9.0f * sx, hh = 9.0f * sy;
+        const float l = cx - hw, r = cx + hw, t = cy - hh, b = cy + hh;
+        const float xs[6] = { l, r, r, l, r, l }, ys[6] = { t, t, b, t, b, b };
+        const float us[6] = { 0.0f, 64.0f, 64.0f, 0.0f, 64.0f, 0.0f };
+        const float vs[6] = { 0.0f, 0.0f, 64.0f, 0.0f, 64.0f, 64.0f };
+        for (int i = 0; i < 6; i++) q[i] = GpuVertex{ xs[i], ys[i], 0.0f, 1.0f, us[i], vs[i], 255, 255, 255, ca };
+        flush_dcache(q, 6 * sizeof(GpuVertex));
+        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, u_xform_, &proj_);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_stereo_, 0.0f, 0.0f, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_eye_, 1.0f, 0.0f, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uvscale_, 1.0f / 64.0f, 1.0f / 64.0f, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uv1_, 1.0f / 64.0f, 1.0f / 64.0f, 0.0f, 0.0f);
+        for (int i = 0; i < 6; i++) {
+            C3D_TexEnv* env = C3D_GetTexEnv(i);
+            C3D_TexEnvInit(env);
+            if (i == 0) {
+                C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_TEXTURE0, GPU_TEXTURE0);
+                C3D_TexEnvFunc(env, C3D_RGB, GPU_REPLACE);
+                C3D_TexEnvSrc(env, C3D_Alpha, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+                C3D_TexEnvFunc(env, C3D_Alpha, GPU_MODULATE);
+            } else {
+                C3D_TexEnvSrc(env, C3D_Both, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
+                C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+            }
+        }
+        C3D_TexBind(0, &reticle_tex_);
         C3D_TexBind(1, &white_);
         C3D_TexBind(2, &white_);
         C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
@@ -5252,6 +5424,18 @@ void rt64_3ds::show_top_notice_rgba8(const uint32_t* rgba8, int w, int h, uint32
     item.duration_ms = duration_ms ? duration_ms : 6000;
     g_toast_queue.push_back(std::move(item));
     LightLock_Unlock(&g_toast_lock);
+}
+
+void rt64_3ds::set_reticle(bool visible, int style, uint8_t r, uint8_t g, uint8_t b, uint8_t alpha, bool raised) {
+    const uint64_t packed =
+        (visible ? 1ULL : 0ULL) |
+        ((uint64_t)(style & 0xF) << 1) |
+        ((raised ? 1ULL : 0ULL) << 5) |
+        ((uint64_t)r << 8) |
+        ((uint64_t)g << 16) |
+        ((uint64_t)b << 24) |
+        ((uint64_t)alpha << 32);
+    g_reticle_state.store(packed, std::memory_order_relaxed);
 }
 
 bool rt64_3ds::read_back_frame(uint8_t* rdram, uint32_t fb_addr, uint32_t fb_width, int x, int y, int w, int h) {
