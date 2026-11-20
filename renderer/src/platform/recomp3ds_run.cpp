@@ -995,7 +995,9 @@ extern "C" void __system_allocateHeaps(void) {
     // The game's own choice (CMake RT64_3DS_LINEAR_HEAP_MB): keep 16 MB on Old 3DS
     // so RDRAM + ROM cache fit, and allow 24 MB on New 3DS (>= 96 MB remaining) so
     // citro3d targets + HD textures do not exhaust linear RAM.
-    const u32 want_mb = (remaining >= (96u << 20) && RT64_3DS_LINEAR_HEAP_MB < 24) ? 24u : (u32)RT64_3DS_LINEAR_HEAP_MB;
+    const u32 want_mb = (remaining >= (96u << 20) && RT64_3DS_LINEAR_HEAP_MB < 24) ? 24u
+                      : (remaining < (48u << 20) && RT64_3DS_LINEAR_HEAP_MB > 12) ? 12u
+                      : (u32)RT64_3DS_LINEAR_HEAP_MB;
     __ctru_linear_heap_size = want_mb << 20;
     if (__ctru_linear_heap_size > remaining / 2) __ctru_linear_heap_size = remaining / 2;
 #else
@@ -1205,6 +1207,17 @@ int recomp3ds::run(const GameDesc& initial_desc) {
     if (!is_new_3ds) {
         old3ds_check_layout();
         old3ds_quiet_start();
+        // Old 3DS memory & CPU profile: RGB565 eye/post targets halve VRAM and
+        // GPU bandwidth, disabling frame interpolation saves ~3.7 MB of linear
+        // VBOs and a thread on the 2-core 268 MHz CPU, and extra audio margin
+        // prevents underruns.
+        desc.render.eye_color16 = true;
+        desc.render.frame_interpolation = false;
+        desc.render.double_eyes = false;
+        if (desc.old3ds_frame_cap < 1) desc.old3ds_frame_cap = 1;
+        if (desc.audio_margin_frames < 6) desc.audio_margin_frames = 6;
+        fprintf(stderr, "recomp3ds: Old 3DS profile: RGB565 eyes, no frame interpolation, 30 FPS cap, audio margin %d\n",
+                desc.audio_margin_frames);
     }
     // Before the settings: a loaded setting's on_change may pick another map,
     // and the Controls page's defaults are the game's own.
@@ -1212,6 +1225,19 @@ int recomp3ds::run(const GameDesc& initial_desc) {
     recomp3ds::input_set_map(desc.button_map, desc.button_map_count);
     recomp3ds::input_set_controller_pak(desc.controller_pak);
     recomp3ds::settings_menu_init(g_base_path, desc);
+    if (!is_new_3ds) {
+        rt64_3ds::settings().image_bloom = 0;
+    }
+    if (!is_new_3ds && rt64_3ds::settings().wide_800 != 0) {
+        u8 model = 0;
+        if (R_SUCCEEDED(cfguInit())) {
+            if (R_SUCCEEDED(CFGU_GetSystemModel(&model)) && model == CFG_MODEL_2DS) {
+                rt64_3ds::settings().wide_800 = 0;
+                fprintf(stderr, "recomp3ds: Old 2DS detected; disabling HighRes wide mode\n");
+            }
+            cfguExit();
+        }
+    }
     if (rt64_3ds::settings().wide_800 != 0) {
         gfxSetWide(true);
         for (int buffer = 0; buffer < 2; ++buffer) {
@@ -1256,7 +1282,21 @@ int recomp3ds::run(const GameDesc& initial_desc) {
         const bool heap_short = heap < need;
         using RomPlace = recomp3ds::GameDesc::RomPlace;
         const bool stream = mode == 2 || (mode == 0 && (place == RomPlace::Stream || (place == RomPlace::Auto && heap_short)));
-        if (stream) recomp3ds::rom_stream_install((size_t)desc.rom_cache_mb << 20, (size_t)desc.rom_block_kb << 10);
+        if (stream) {
+            size_t cache_mb = (size_t)desc.rom_cache_mb;
+            const uint64_t reserve = recomp::mem_size + (14u << 20);
+            if (!is_new_3ds || heap < reserve + (cache_mb << 20)) {
+                const size_t avail_mb = heap > reserve ? (size_t)((heap - reserve) >> 20) : 2u;
+                const size_t max_mb = is_new_3ds ? cache_mb : std::min<size_t>(cache_mb, 8u);
+                const size_t clamped = std::clamp<size_t>(avail_mb, 2u, max_mb);
+                if (clamped < cache_mb) {
+                    fprintf(stderr, "recomp3ds: %s: ROM cache capped %zu -> %zu MB (heap %lu MB)\n",
+                            is_new_3ds ? "low heap" : "Old 3DS", cache_mb, clamped, (unsigned long)(heap >> 20));
+                    cache_mb = clamped;
+                }
+            }
+            recomp3ds::rom_stream_install(cache_mb << 20, (size_t)desc.rom_block_kb << 10);
+        }
         const char* why = mode != 0 ? ", settings.ini"
                         : place != RomPlace::Auto ? ", the game's choice"
                         : heap_short ? ", auto: the heap is short" : ", auto: it fits";

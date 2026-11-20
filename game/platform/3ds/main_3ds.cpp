@@ -689,7 +689,7 @@ int main(int argc, char** argv) {
     desc.render.max_decal_bias = 0.0005f;
 
     desc.two_cores_game_on_core0 = true;
-    desc.two_cores_read_on_game_core = true;
+    desc.two_cores_read_on_game_core = false;
     // Ordinary voices remain on the DSP. The native main-bus hook builds
     // only Conker's separate MP3 stream into the AI output channel.
     desc.synth = recomp3ds::SynthFlavor::NAudio;
@@ -716,11 +716,17 @@ int main(int argc, char** argv) {
     desc.menu_option_count = sizeof(kOptions)/sizeof(kOptions[0]);
     desc.menu_defaults = kDefaults;
     desc.menu_default_count = sizeof(kDefaults) / sizeof(kDefaults[0]);
-    desc.old3ds_frame_cap = 0;
+    desc.old3ds_frame_cap = 1;
 
 #ifdef CONKER_NULL_RENDERER
     desc.null_renderer = true;
 #endif
 
+    bool is_new_3ds = false;
+    APT_CheckNew3DS(&is_new_3ds);
+    if (!is_new_3ds) {
+        value_model_highest = 0;
+        conker3ds::set("model_highest", 0);
+    }
     return recomp3ds::run(desc);
 }
