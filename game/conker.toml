@@ -916,3 +916,26 @@ text = """
     { extern int conker_frame_update_hook(uint8_t*, recomp_context*); if (conker_frame_update_hook(rdram, ctx)) return; }
 #endif
 """
+
+# Capture the release time while the note's sound bank is still valid. A
+# 0.2.9-r3 Luma dump faults at the later ALSound->envelope->releaseTime read
+# (MIPS 0x10014BD4), after the sound's envelope pointer became invalid.
+[[patches.hook]]
+func = "__n_CSPHandleMIDIMsg"
+before_vram = 0x10014404
+text = """
+#ifdef __3DS__
+    { extern void conker_capture_note_release(uint8_t*,recomp_context*); conker_capture_note_release(rdram,ctx); }
+#endif
+"""
+
+[[patches.hook]]
+func = "__n_CSPHandleMIDIMsg"
+before_vram = 0x10014BC4
+text = """
+#ifdef __3DS__
+    { extern void conker_get_note_release(uint8_t*,recomp_context*);
+      conker_get_note_release(rdram,ctx); ctx->r31=0x10014BD8;
+      __n_seqpReleaseVoice(rdram,ctx); goto L_10014BD8; }
+#endif
+"""

@@ -8,21 +8,25 @@
 //     <frame> LOG <text>           log the text
 //     <frame> EXIT                 quit (as the HOME prompt's A does)
 //     <frame> HOME                 a HOME button press
+//     <frame> SAVEICON <frames>    exercise the save indicator (no file write)
 //   Frames count from the start of the current phase.
 #include <3ds.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <strings.h>
+#include <algorithm>
 
 #include "recomp3ds.h"
 #include "recomp3ds_internal.h"
+
+extern "C" void recomp3ds_save_activity(int active);
 
 namespace {
 
 constexpr int kMaxCmds = 256;
 constexpr int kMaxPhases = 32;
-enum Kind { KEYS, TOUCH, SHOT, LOG, EXIT, HOME, CAPTURE };
+enum Kind { KEYS, TOUCH, SHOT, LOG, EXIT, HOME, CAPTURE, SAVE_ICON };
 struct Cmd { int frame, frames; u32 keys; Kind kind; int phase; int tx, ty; char text[48]; };
 
 Cmd g_cmds[kMaxCmds];
@@ -86,6 +90,7 @@ void recomp3ds::autotest_load(const char* base_path) {
         else if (strcasecmp(b, "LOG") == 0)  { cmd->kind = LOG;  if (n > 2) strncpy(cmd->text, c, sizeof(cmd->text) - 1); }
         else if (strcasecmp(b, "EXIT") == 0) { cmd->kind = EXIT; }
         else if (strcasecmp(b, "HOME") == 0) { cmd->kind = HOME; }
+        else if (strcasecmp(b, "SAVEICON") == 0) { cmd->kind=SAVE_ICON;cmd->frames=n>2?std::max(1,atoi(c)):1; }
         // "CAPTURE": this display list with RDRAM (gfx_task*.bin) and the
         // frame it draws (gfx_frame*.ppm), as a SELECT hold with
         // dbg_capture=1; "CAPTURE seq <count>": the next <count> frames
@@ -151,6 +156,10 @@ u32 recomp3ds::autotest_tick() {
             case LOG:  if (fired) fprintf(stderr, "AUTOTEST: %s\n", c->text); break;
             case EXIT: if (fired) { fprintf(stderr, "AUTOTEST: exit\n"); recomp3ds::request_exit(); } break;
             case HOME: if (fired) { fprintf(stderr, "AUTOTEST: home\n"); g_home = true; } break;
+            case SAVE_ICON:
+                if(fired)recomp3ds_save_activity(1);
+                if(prev<c->frame+c->frames && f>=c->frame+c->frames)recomp3ds_save_activity(0);
+                break;
             case CAPTURE:
                 if (fired) {
                     int count = 0;

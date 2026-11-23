@@ -7,6 +7,8 @@
 #include "recomp.h"
 #include "conker_options.h"
 #include "rt64_3ds.h"
+#include "conker_note_release.h"
+#include "librecomp/addresses.hpp"
 #include <3ds.h>
 #include <algorithm>
 #include <cmath>
@@ -19,6 +21,20 @@ extern "C" void func_1512C490(uint8_t*,recomp_context*);
 extern "C" void conker_enter_photo_mode_ui();
 extern "C" void conker_exit_photo_mode_ui();
 extern "C" void conker_photo_camera(uint8_t*, recomp_context*);
+namespace { conker_audio::NoteReleases note_releases; unsigned release_warnings=0; }
+extern "C" void conker_capture_note_release(uint8_t* rdram,recomp_context* ctx) {
+    if(!note_releases.capture(rdram,recomp::mem_size,uint32_t(ctx->r25),uint32_t(ctx->r8)) && release_warnings++<8)
+        std::fprintf(stderr,"audio: invalid envelope at note start (voice=%08lx sound=%08lx)\n",
+            (unsigned long)uint32_t(ctx->r25),(unsigned long)uint32_t(ctx->r8));
+}
+extern "C" void conker_get_note_release(uint8_t* rdram,recomp_context* ctx) {
+    bool captured=false;
+    ctx->r6=(gpr)(int32_t)note_releases.release(rdram,recomp::mem_size,uint32_t(ctx->r15),captured);
+    ctx->r5=ADD32(ctx->r15,4);
+    if(!captured && release_warnings++<8)
+        std::fprintf(stderr,"audio: uncached note release (voice=%08lx time=%ld)\n",
+            (unsigned long)uint32_t(ctx->r15),(long)(int32_t)ctx->r6);
+}
 namespace recomp3ds { u32 settings_menu_keys(); }
 
 namespace {

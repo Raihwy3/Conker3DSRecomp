@@ -29,6 +29,8 @@
 #include "rt64_3ds_shbin.h"
 #include "ultramodern/extensions.h"
 
+namespace recomp3ds { const uint8_t* screen_conker_save_tail(int crop[4]); }
+
 extern "C" void C3Di_UpdateContext(void);
 // citro3d's own frame split (internal, exported): closes the commands
 // recorded since the last split, with the framebuffer flush a draw needs.
@@ -1406,6 +1408,11 @@ private:
             if (post_ok_) { C3D_TexSetFilter(&post_tex_, GPU_LINEAR, GPU_LINEAR); C3D_TexSetWrap(&post_tex_, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE); }
         }
         if (rt64_3ds::render_desc().hud_on_bottom_supported) init_bottom();
+        save_tex_ok_=true;
+        for(auto& tex:save_tex_){
+            if(C3D_TexInit(&tex,64,64,GPU_RGBA8))C3D_TexSetFilter(&tex,GPU_LINEAR,GPU_LINEAR);
+            else save_tex_ok_=false;
+        }
         toast_tex_ok_ = C3D_TexInit(&toast_tex_, 256, 64, GPU_RGBA8);
         if (toast_tex_ok_) {
             memset(toast_tex_.data, 0, 256 * 64 * 4);
@@ -1814,6 +1821,16 @@ private:
         std::vector<uint32_t> toast_rgba8;
         int toast_w = 0, toast_h = 0;
         const bool toast_on = !offscreen_frame && toast_tex_ok_ && n + 54 <= kVboVerts && toast_snapshot(toast_seq, toast_text, toast_rgba8, toast_w, toast_h);
+        int save_crop[4]{};
+        const uint8_t* save_pixels=(!offscreen_frame && save_tex_ok_ && n+180<=kVboVerts)
+            ? recomp3ds::screen_conker_save_tail(save_crop):nullptr;
+        if(save_pixels){
+            // Use the same ownership slots as the vertex buffers: a recorded
+            // frame's icon texture must survive the in-between presentation.
+            save_slot_=0;
+            for(int i=0;i<4;++i)if(vb==vbo_[i])save_slot_=i;
+            update_save_tex(save_pixels,save_crop);
+        }
         const uint64_t ret_packed = (!offscreen_frame && reticle_tex_ok_ && n + 12 <= kVboVerts) ? reticle_snapshot() : 0;
         const bool reticle_on = (ret_packed & 1ULL) != 0;
         // The right eye from the left eye's commands: the left eye's draws
@@ -2024,6 +2041,7 @@ private:
         if (post) post_pass((uint32_t)n + 12, (uint32_t)n + 54, cur_eye_[pass]);
         if (vignette) vignette_pass((uint32_t)n + 78);
         if (reticle_on) draw_reticle(cur_eye_[pass], vb + n + 6, (uint32_t)(n + 6), ret_packed);
+        if(save_pixels)draw_toast(cur_eye_[pass],vb+n+174,(uint32_t)(n+174),0,"",toast_rgba8,save_crop[1]-save_crop[0],save_crop[3]-save_crop[2],true);
         if (toast_on) draw_toast(cur_eye_[pass], vb + n + 48, (uint32_t)(n + 48), toast_seq, toast_text, toast_rgba8, toast_w, toast_h);
         }   // eye passes
         // dbg_frame_trace_from / _count: the replay's decisions, a line a
@@ -4662,6 +4680,9 @@ public:
     float bottom_scale_ = 1.0f, bottom_ox_ = 0.0f, bottom_oy_ = 0.0f;
     C3D_Tex con_tex_{};             // the console's text, 512x256 RGBA4, black see-through
     bool con_tex_ok_ = false;
+    C3D_Tex save_tex_[4]{};
+    int save_slot_=0;
+    bool save_tex_ok_=false;
     C3D_Tex toast_tex_{};           // top-screen bottom-right notification toast, 256x64 RGBA4
     bool toast_tex_ok_ = false;
     C3D_Tex reticle_tex_{};         // top-screen anti-aliased SDF reticle, 64x64 RGBA8
@@ -4878,10 +4899,21 @@ public:
         }
         flush_dcache(dst, kTexW * kTexH * 4);
     }
+    void update_save_tex(const uint8_t* pixels,const int crop[4]) {
+        auto* dst=(uint32_t*)save_tex_[save_slot_].data;
+        memset(dst,0,64*64*4);
+        for(int y=crop[2];y<crop[3];++y)for(int x=crop[0];x<crop[1];++x){
+            const auto* p=pixels+(y*40+x)*4;
+            const unsigned xx=x-crop[0],yy=63-(y-crop[2]);
+            const unsigned morton=(xx&1)|((xx&2)<<1)|((xx&4)<<2)|((yy&1)<<1)|((yy&2)<<2)|((yy&4)<<3);
+            dst[((yy>>3)*8+(xx>>3))*64+morton]=(uint32_t(p[0])<<24)|(uint32_t(p[1])<<16)|(uint32_t(p[2])<<8)|p[3];
+        }
+        flush_dcache(dst,64*64*4);
+    }
     void draw_toast(C3D_RenderTarget* target, GpuVertex* q, uint32_t first, uint32_t seq, const std::string& text,
-                    const std::vector<uint32_t>& rgba8, int tw, int th) {
+                    const std::vector<uint32_t>& rgba8, int tw, int th, bool save_icon=false) {
         if (target == nullptr) return;
-        if (seq != toast_drawn_seq_) {
+        if (!save_icon && seq != toast_drawn_seq_) {
             update_toast_tex(text, rgba8, tw, th);
             toast_drawn_seq_ = seq;
             fprintf(stderr, "rt64-3ds: draw_toast seq=%u '%s' geo=%dx%d x0=%d (%dx%d)\n", seq, text.c_str(), geo_.w, geo_.h, geo_.x0, toast_w_, toast_h_);
@@ -4891,22 +4923,28 @@ public:
         frame_viewport_ = false;
         set_cull(GPU_CULL_NONE);
         const float total_w = (float)geo_.w + 2.0f * geo_.x0;
-        const float sx = total_w / 400.0f;
-        const float sy = (float)geo_.h / 240.0f;
-        const float r = ((float)geo_.w + geo_.x0) - 6.0f * sx;
-        const float l = r - (float)toast_w_ * sx;
-        const float b = (float)geo_.h - 6.0f * sy;
-        const float t = b - (float)toast_h_ * sy;
+        const float sx = save_icon?1.0f:total_w/400.0f;
+        const float sy = save_icon?1.0f:(float)geo_.h/240.0f;
+        const int image_w=save_icon?tw:toast_w_,image_h=save_icon?th:toast_h_;
+        const float scale=save_icon?32.0f/std::max(1,image_h):1.0f;
+        const float l=save_icon?10.0f:((float)geo_.w+geo_.x0)-6.0f*sx-image_w*sx;
+        const float r=l+image_w*sx*scale;
+        const float b=save_icon?228.0f:(float)geo_.h-6.0f*sy;
+        const float t=b-image_h*sy*scale;
         const float xs[6] = { l, r, r, l, r, l }, ys[6] = { t, t, b, t, b, b };
-        const float us[6] = { 0.0f, (float)toast_w_, (float)toast_w_, 0.0f, (float)toast_w_, 0.0f };
-        const float vs[6] = { 0.0f, 0.0f, (float)toast_h_, 0.0f, (float)toast_h_, (float)toast_h_ };
+        const float us[6] = { 0.0f, (float)image_w, (float)image_w, 0.0f, (float)image_w, 0.0f };
+        const float vs[6] = { 0.0f, 0.0f, (float)image_h, 0.0f, (float)image_h, (float)image_h };
         for (int i = 0; i < 6; i++) q[i] = GpuVertex{ xs[i], ys[i], 0.0f, 1.0f, us[i], vs[i], 255, 255, 255, 255 };
         flush_dcache(q, 6 * sizeof(GpuVertex));
-        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, u_xform_, &proj_);
+        if(save_icon){
+            C3D_Mtx icon_projection;
+            Mtx_OrthoTilt(&icon_projection,0,400,240,0,0,1,true);
+            C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,u_xform_,&icon_projection);
+        } else C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,u_xform_,&proj_);
         C3D_FVUnifSet(GPU_VERTEX_SHADER, u_stereo_, 0.0f, 0.0f, 0.0f, 0.0f);
         C3D_FVUnifSet(GPU_VERTEX_SHADER, u_eye_, 1.0f, 0.0f, 0.0f, 0.0f);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uvscale_, 1.0f / 256.0f, 1.0f / 64.0f, 0.0f, 0.0f);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uv1_, 1.0f / 256.0f, 1.0f / 64.0f, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uvscale_, 1.0f / (save_icon?64.0f:256.0f), 1.0f / 64.0f, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uv1_, 1.0f / (save_icon?64.0f:256.0f), 1.0f / 64.0f, 0.0f, 0.0f);
         for (int i = 0; i < 6; i++) {
             C3D_TexEnv* env = C3D_GetTexEnv(i);
             C3D_TexEnvInit(env);
@@ -4914,7 +4952,7 @@ public:
             else C3D_TexEnvSrc(env, C3D_Both, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
             C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
         }
-        C3D_TexBind(0, &toast_tex_);
+        C3D_TexBind(0, save_icon?&save_tex_[save_slot_]:&toast_tex_);
         C3D_TexBind(1, &white_);
         C3D_TexBind(2, &white_);
         C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);

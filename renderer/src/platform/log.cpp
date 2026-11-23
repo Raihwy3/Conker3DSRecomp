@@ -27,10 +27,12 @@
 #include "rt64_3ds.h"
 #include "conker_menu_tabs.h"
 #include "conker_launcher.h"
+#include "save_indicator.h"
 #include <string>
 
 namespace {
 
+recomp3ds::SaveIndicator g_save_indicator;
 char g_line[512];
 int g_len = 0;
 FILE* g_file = nullptr;
@@ -274,6 +276,14 @@ extern "C" int conker_launcher_draw(const ConkerLauncherView* view) {
 }
 extern "C" void conker_launcher_finish() {
     std::vector<uint16_t>().swap(g_launcher_backdrop);std::vector<uint16_t>().swap(g_launcher_canvas);
+}
+
+extern "C" void recomp3ds_save_activity(int active) {g_save_indicator.signal(active!=0);}
+const uint8_t* recomp3ds::screen_conker_save_tail(int crop[4]) {
+    const u64 now=svcGetSystemTick();
+    if(!g_save_indicator.visible(now/(SYSCLOCK_ARM11/1000)) || !g_conker_theme || !g_tail_frames_ready)return nullptr;
+    std::copy(g_tail_crop,g_tail_crop+4,crop);
+    return g_tail_frames[(now/(SYSCLOCK_ARM11/30))%kTailFrames];
 }
 
 void recomp3ds::screen_set_conker_theme(bool enabled) { g_conker_theme = enabled; }

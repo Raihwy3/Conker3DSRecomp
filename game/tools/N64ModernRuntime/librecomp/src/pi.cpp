@@ -12,6 +12,10 @@
 #include <ultramodern/ultra64.h>
 #include <ultramodern/ultramodern.hpp>
 
+#ifdef __3DS__
+extern "C" void recomp3ds_save_activity(int active) __attribute__((weak));
+#endif
+
 static std::vector<uint8_t> rom;
 static const recomp::RomStream* rom_stream = nullptr;
 static bool rom_stream_open = false;
@@ -154,6 +158,9 @@ void set_save_file_path(const std::u8string& subfolder, const std::u8string& nam
 }
 
 void update_save_file() {
+#ifdef __3DS__
+    if(recomp3ds_save_activity)recomp3ds_save_activity(1);
+#endif
     bool saving_failed = false;
     {
         std::ofstream save_file = recomp::open_output_file_with_backup(ultramodern::get_save_file_path(), std::ios_base::binary);
@@ -169,6 +176,9 @@ void update_save_file() {
     if (!saving_failed) {
         saving_failed = !recomp::finalize_output_file_with_backup(ultramodern::get_save_file_path());
     }
+#ifdef __3DS__
+    if(recomp3ds_save_activity)recomp3ds_save_activity(0);
+#endif
     if (saving_failed) {
         ultramodern::error_handling::message_box("Failed to write to the save file. Check your file permissions and whether the save folder has been moved to Dropbox or similar, as this can cause issues.");
     }

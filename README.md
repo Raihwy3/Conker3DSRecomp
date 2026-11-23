@@ -2,7 +2,7 @@
 
 A work-in-progress Nintendo 3DS port of [CBFD-Recompiled](https://github.com/sciaschi/CBFD-Recompiled), using [rt64-3ds](https://github.com/oneup03/rt64-3ds) and N64ModernRuntime.
 
-Includes stereoscopic 3D, interpolated presentation, graphics filters, DSP audio, camera and gyro options, and a touchscreen bottom-screen interface. Performance and stability still need work. Later chapters have not been fully tested.
+Includes stereoscopic 3D, interpolated presentation, graphics filters, DSP audio, camera and gyro options, and a touchscreen bottom-screen interface. Performance and stability still need work. Later chapters have not been fully tested. A small animated tail on the lower-left of the top screen indicates game-save writes.
 
 ## Install
 
