@@ -1317,8 +1317,12 @@ private:
         g_gpu_lock_ready = true;
         aptHook(&g_apt_post_cookie, apt_post_hook, nullptr);   // before citro3d's: runs after it
         wide_800_ = rt64_3ds::settings().wide_800 != 0;
+        color16_ = rt64_3ds::render_desc().eye_color16;
         top_h_ = wide_800_ ? 800 : 400;
         horiz_scale_ = wide_800_ ? 2 : 1;
+        if (color16_) {
+            gfxSetScreenFormat(GFX_TOP, GSP_RGB565_OES);
+        }
         if (wide_800_) {
             gfxSetWide(true);
         } else {
@@ -1356,7 +1360,6 @@ private:
         }
         fill_clear_ = rt64_3ds::render_desc().fill_clear;
         // The eyes' formats (RenderDesc::eye_color16 / eye_depth16).
-        color16_ = rt64_3ds::render_desc().eye_color16;
         depth16_ = rt64_3ds::render_desc().eye_depth16;
         const GPU_COLORBUF eye_color = color16_ ? GPU_RB_RGB565 : GPU_RB_RGBA8;
         const GPU_DEPTHBUF eye_depth = depth16_ ? GPU_RB_DEPTH16 : GPU_RB_DEPTH24_STENCIL8;
@@ -1394,7 +1397,7 @@ private:
         if (!top_) { fprintf(stderr, "rt64-3ds: render target creation failed\n"); return; }
         transfer_flags_ = GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) |
                           GX_TRANSFER_IN_FORMAT(color16_ ? GX_TRANSFER_FMT_RGB565 : GX_TRANSFER_FMT_RGBA8) |
-                          GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) |
+                          GX_TRANSFER_OUT_FORMAT(color16_ ? GX_TRANSFER_FMT_RGB565 : GX_TRANSFER_FMT_RGB8) |
                           GX_TRANSFER_SCALING(sample_scale_ == 2 ? GX_TRANSFER_SCALE_X : GX_TRANSFER_SCALE_NO);
         eye_clear_ = color16_ ? 0x0000u : 0x000000FFu;
         C3D_RenderTargetSetOutput(top_, GFX_TOP, GFX_LEFT, transfer_flags_);

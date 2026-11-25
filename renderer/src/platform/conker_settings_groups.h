@@ -9,7 +9,7 @@ constexpr ConkerGroup kConkerGroups[CSectionCount]={
     {-1,"Categories"},{CRoot,"Graphics"},{CGraphics,"Display"},{CGraphics,"Stereoscopic 3D"},{CGraphics,"Image effects"},{CGraphics,"Appearance"},
     {CRoot,"Controls"},{CControls,"Presets"},{CControls,"Sticks"},{CControls,"Camera"},{CControls,"Aiming"},{CControls,"Gyro"},{CControls,"Touchscreen"},{CControls,"Button mapping"},
     {CRoot,"Audio"},{CAudio,"Output"},
-    {CRoot,"Achievements"},
+    {CRoot,"Trophies"},
     {CRoot,"Misc"},{CMisc,"Extras"},{CMisc,"Photo mode"},{CExtras,"Diagnostics"},{CMisc,"Save states"},{CMisc,"Cheats"}};
 int conker_section_for(const char* key,int page) {
     if(!strncmp(key,"misc_photo_",11))return CPhotoMode;

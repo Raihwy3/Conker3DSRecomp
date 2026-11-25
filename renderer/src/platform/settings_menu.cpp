@@ -325,9 +325,21 @@ int page_count(int page) {
 bool visible(int slot) { return slot >= g_top && slot < g_top + kSlots; }
 int slot_line(int slot) { return kFirstRow + (slot - g_top) * kRowStep; }
 
+bool g_is_new_3ds = true;
+bool g_is_old_2ds = false;
+
 bool is_row_disabled(const Row& r) {
-    return rt64_3ds::settings().wide_800 != 0 &&
-           (r.page == recomp3ds::Page3D || strcmp(r.key, "supersampling") == 0);
+    const bool stereo_folder = g_conker_nav_keys[CStereo][0] != '\0' && strcmp(r.key, g_conker_nav_keys[CStereo]) == 0;
+    if (rt64_3ds::settings().wide_800 != 0 &&
+        (r.page == recomp3ds::Page3D || stereo_folder || strcmp(r.key, "supersampling") == 0))
+        return true;
+    if (!g_is_new_3ds) {
+        if (strcmp(r.key, "image_bloom") == 0) return true;
+        if (strcmp(r.key, "frame_cap") == 0 && r.lo == r.hi) return true;
+    }
+    if (g_is_old_2ds && (strcmp(r.key, "wide_800") == 0 || r.page == recomp3ds::Page3D || stereo_folder))
+        return true;
+    return false;
 }
 
 void draw_row(int slot) {
@@ -336,7 +348,8 @@ void draw_row(int slot) {
     const Row& r = g_rows[idx[slot]];
     const bool dis = is_row_disabled(r);
     char val[24];
-    if (dis && strcmp(r.key, "supersampling") == 0) snprintf(val, sizeof(val), "Off");
+    if (dis && g_conker_nav_keys[CStereo][0] != '\0' && strcmp(r.key, g_conker_nav_keys[CStereo]) == 0) snprintf(val, sizeof(val), "LOCKED");
+    else if (dis && (strcmp(r.key, "supersampling") == 0 || strcmp(r.key, "image_bloom") == 0 || strcmp(r.key, "wide_800") == 0)) snprintf(val, sizeof(val), "Off");
     else if (r.names != nullptr) snprintf(val, sizeof(val), "%s", r.names[*r.value - r.lo]);
     else if (*r.value == 0 && r.zero_text != nullptr) snprintf(val, sizeof(val), "%s", r.zero_text);
     else if (r.tenths) snprintf(val, sizeof(val), "%d.%d", *r.value / 10, *r.value % 10);
@@ -1082,6 +1095,13 @@ void recomp3ds::settings_menu_init(const char* base_path, const GameDesc& desc) 
     add_row({ "stereo_ghost_black_floor", "Ghost black floor", 0, 20, &st.ghost_black_floor, nullptr, false, "%", nullptr, Page3D, 1, nullptr });
     bool is_new_3ds = false;
     APT_CheckNew3DS(&is_new_3ds);
+    g_is_new_3ds = is_new_3ds;
+    g_is_old_2ds = false;
+    if (!is_new_3ds && R_SUCCEEDED(cfguInit())) {
+        u8 model = 0;
+        if (R_SUCCEEDED(CFGU_GetSystemModel(&model)) && model == CFG_MODEL_2DS) g_is_old_2ds = true;
+        cfguExit();
+    }
     // The C-Stick's rows (and a game's MenuOption::new3ds_only rows) only on
     // a New 3DS: an Old 3DS has no C-Stick, they would do nothing.
     const int cstick_page = is_new_3ds ? PageControls : recomp3ds::PageCount;

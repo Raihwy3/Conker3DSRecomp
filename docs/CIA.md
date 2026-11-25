@@ -26,4 +26,18 @@ The output is `.local/releases/conker-3ds-recomp-v<version>.cia`. The script che
 
 Upload the raw CIA beside the install ZIP and matching source ZIP under the same release tag. Do not name a ZIP of the CIA like the Homebrew Launcher install ZIP: the latter must contain the `.3dsx` and `.smdh` pair.
 
+The script also verifies the version stored in the CIA title metadata, and writes
+an optional `cia-conker-3ds-recomp-v<version>.zip` with installation instructions
+and license notices. Its prefix keeps it out of the 3DSX updater. The raw CIA
+remains the asset used by the installed updater. Checksums and validation results
+are saved in `.local/cia/validation.json`.
+
+Some makerom 0.19.0 builds encode minor versions incorrectly because their own
+version macros collide with CIA version indices. If the version check fails,
+use a corrected makerom build. The patch in
+`tools/patches/makerom-version.patch` applies to Project_CTR commit
+`d52c2b0e788c2d085763d7c5dcc4b2edd9ffb7d8`: from that checkout, run
+`git apply --unidiff-zero /path/to/makerom-version.patch`, then run `make deps -j4`
+and `make -j4` in `makerom/`. Pass the resulting executable to `--makerom`.
+
 Host structure and emulator checks do not replace a console boot and update test.

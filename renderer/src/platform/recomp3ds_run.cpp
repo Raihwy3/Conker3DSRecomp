@@ -1207,16 +1207,15 @@ int recomp3ds::run(const GameDesc& initial_desc) {
     if (!is_new_3ds) {
         old3ds_check_layout();
         old3ds_quiet_start();
-        // Old 3DS memory & CPU profile: RGB565 eye/post targets halve VRAM and
-        // GPU bandwidth, disabling frame interpolation saves ~3.7 MB of linear
-        // VBOs and a thread on the 2-core 268 MHz CPU, and extra audio margin
-        // prevents underruns.
-        desc.render.eye_color16 = true;
+        // Old 3DS memory & CPU profile: keep RGBA8 eyes (real 3DS hardware
+        // hangs on RGB565 -> RGB8 display transfers and Conker uses frame
+        // copies), disable frame interpolation to save ~3.7 MB of linear
+        // VBOs and a thread on the 2-core 268 MHz CPU, and add audio margin.
         desc.render.frame_interpolation = false;
         desc.render.double_eyes = false;
         if (desc.old3ds_frame_cap < 1) desc.old3ds_frame_cap = 1;
         if (desc.audio_margin_frames < 6) desc.audio_margin_frames = 6;
-        fprintf(stderr, "recomp3ds: Old 3DS profile: RGB565 eyes, no frame interpolation, 30 FPS cap, audio margin %d\n",
+        fprintf(stderr, "recomp3ds: Old 3DS profile: RGBA8 eyes, no frame interpolation, 30 FPS cap, audio margin %d\n",
                 desc.audio_margin_frames);
     }
     // Before the settings: a loaded setting's on_change may pick another map,

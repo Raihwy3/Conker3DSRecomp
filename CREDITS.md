@@ -10,4 +10,8 @@
 - **minimp3 contributors** — MP3 decoder.
 - **Raihwy3** — this 3DS integration and launcher; the updater is adapted from Eyes of Gold Launcher.
 
+- **ThieviusCTR** — follow-up CIA version checks and release packaging improvements.
+- **3DSGuy / applestash / Jakcron** — makerom and its MIT-licensed Homebrew boot logo.
+- **Steveice10 / carstene1ns** — bannertool.
+
 The vendored dependencies retain their authors’ notices. This is an unofficial project and is not affiliated with Rare, Nintendo or Microsoft.

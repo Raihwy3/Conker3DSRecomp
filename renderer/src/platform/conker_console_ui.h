@@ -26,16 +26,18 @@ bool g_conker_quit_prompt=false, g_conker_quit_restarts=false;
 u64 g_conker_notice_until=0;
 int g_conker_play_map=-1;
 int g_background_chapter=-1;
+int g_conker_bg_style=0;
 struct ChapterSurface { int id,w,h,bits; };
 // Verified bank-04 terrain consumers (map, segment 0):
 // 41 bark; 6 mossy rock; 11 masonry; 12 barn boards; 53 cavern wall;
 // 2 carved stone; 60 castle masonry; 4 weathered metal; 57 bank masonry.
 // Menu surface: map 29 pub floor (resource 439, horizontal faces at y=0).
-constexpr ChapterSurface kChapterSurfaces[10]={{2714,64,32,4},{1455,32,64,8},
+constexpr ChapterSurface kChapterSurfaces[12]={{2714,64,32,4},{1455,32,64,8},
     {217,64,64,4},{3511,64,32,4},{45,64,32,4},{3990,64,64,4},
-    {1502,32,64,8},{4506,64,64,4},{853,32,32,8},{439,32,64,8}};
-uint16_t g_chapter_surfaces[10][64*64]{};
-bool g_chapter_surface_ready[10]{};
+    {1502,32,64,8},{4506,64,64,4},{853,32,32,8},{439,32,64,8},
+    {1501,64,64,4},{1503,64,64,4}};
+uint16_t g_chapter_surfaces[12][64*64]{};
+bool g_chapter_surface_ready[12]{};
 struct ConkerScene { char title[72]{}; uint8_t map=0; };
 ConkerScene g_conker_scenes[204];
 uint8_t g_chapter_art[9][96*32*4]{};
@@ -113,7 +115,7 @@ bool load_conker_ui(const char* path) {
             for(int c=0;c<9;++c) {const int base=c==3?barn:chapters[c];
                 if(id>=base && id<base+3){target=g_chapter_art[c];target_width=96;tile=id-base;}}
             for(int d=0;d<10;++d)if(id==digits[d])target=g_life_digits[d];
-            for(int c=0;c<10;++c)if(id==kChapterSurfaces[c].id) {
+            for(int c=0;c<12;++c)if(id==kChapterSurfaces[c].id) {
                 const auto& t=kChapterSurfaces[c];
                 auto raw=ui_unzip(ui_read(f,offset,n),65536);
                 const size_t palette_bytes=t.bits==4?32:512;
@@ -171,12 +173,15 @@ int game_glyph(unsigned char c) {
 int game_text_width(const char* s) {
     int w=0;for(;*s;++s){int k=game_glyph((unsigned char)*s);w+=*s==' '?4:k>=0?g_game_glyphs[k].w+g_game_glyphs[k].dx:0;}return w;
 }
-void game_blend(uint16_t* dest,int x,int y,int r,int g,int b,int alpha) {
+void game_blend(uint8_t* dest,int x,int y,int r,int g,int b,int alpha) {
     if(x<0||x>=320||y<0||y>=240||alpha<=0)return;
-    uint16_t& d=dest[theme_index(x,y)];int dr=((d>>11)&31)*255/31,dg=((d>>5)&63)*255/63,db=(d&31)*255/31;
-    d=theme_rgb((r*alpha+dr*(255-alpha))/255,(g*alpha+dg*(255-alpha))/255,(b*alpha+db*(255-alpha))/255);
+    uint8_t* d=&dest[(size_t)theme_index(x,y)*3];
+    const int inv=255-alpha;
+    d[0]=(uint8_t)((b*alpha+d[0]*inv)/255);
+    d[1]=(uint8_t)((g*alpha+d[1]*inv)/255);
+    d[2]=(uint8_t)((r*alpha+d[2]*inv)/255);
 }
-void game_text(uint16_t* dest,const char* s,int x,int y,int maxw,uint16_t color,bool center=false) {
+void game_text(uint8_t* dest,const char* s,int x,int y,int maxw,uint16_t color,bool center=false) {
     const int width=game_text_width(s);if(!width)return;
     const float scale=std::min(1.0f,(float)maxw/width);
     if(center)x-=int(width*scale)/2;
@@ -194,11 +199,11 @@ void game_line(char* out,int row,int start=0,int count=40) {
     memcpy(out,g_game_cells[row]+start,count);out[count]=0;
     while(count && out[count-1]==' ')out[--count]=0;
 }
-void game_options(uint16_t* dest,int x,int y) {
+void game_options(uint8_t* dest,int x,int y) {
     if(!g_options_ready){game_text(dest,"OPTIONS",160,y+8,250,theme_rgb(255,220,80),true);return;}
     for(int yy=0;yy<32;++yy)for(int xx=0;xx<96;++xx){const auto* p=g_options_art+(yy*96+xx)*4;game_blend(dest,x+xx,y+yy,p[0],p[1],p[2],p[3]);}
 }
-void make_conker_panel() {memset(g_theme_base,0,320*240*2);memset(g_game_cells,' ',sizeof(g_game_cells));}
+void make_conker_panel() {memset(g_theme_base,0,320*240*3);memset(g_game_cells,' ',sizeof(g_game_cells));}
 int chapter_for_scene(int i) {
     if(i<0 || i>=204)return -1;
     if(i<10 || i==191 || i==203)return 0;
@@ -288,41 +293,96 @@ void update_conker_status() {
     g_conker_map=map;g_conker_lives=displayed_lives;g_conker_scene=chosen;g_conker_chapter=chapter;
 }
 void game_background() {
-    const int chapter=9; // Keep the pub floor throughout menus and gameplay.
-    if(g_background_chapter==chapter)return;
-    g_background_chapter=chapter;
-    const auto& t=kChapterSurfaces[chapter];
-    // Blur the repeating tile once per chapter, wrapping samples at its
-    // edges so neighbouring copies stay seamless. UI glyphs stay sharp.
-    static uint16_t horizontal[64*64], blurred[64*64];
-    constexpr int weights[9]={1,2,3,4,5,4,3,2,1};
-    for(int pass=0;pass<2;++pass)for(int y=0;y<t.h;++y)for(int x=0;x<t.w;++x) {
-        int r=0,g=0,b=0;
-        for(int k=-4;k<=4;++k) {
-            const int sx=pass?x:(x+k+t.w)%t.w, sy=pass?(y+k+t.h)%t.h:y;
-            const uint16_t p=pass?horizontal[sy*t.w+sx]:g_chapter_surfaces[chapter][sy*t.w+sx];
-            const int w=weights[k+4];r+=((p>>11)&31)*w;g+=((p>>5)&63)*w;b+=(p&31)*w;
+    int target=9;
+    switch(g_conker_bg_style) {
+        case 1: target=6; break;
+        case 2: target=10; break;
+        case 3: target=11; break;
+        case 4: target=2; break;
+        case 5: target=8; break;
+        case 6: target=12; break;
+        default: target=9; break;
+    }
+    if(g_background_chapter==target)return;
+    g_background_chapter=target;
+    if(target==12) {
+        for(int y=0;y<240;++y)for(int x=0;x<320;++x) {
+            const float fx=std::min(1.0f,std::min(x,319-x)/38.0f);
+            const float fy=std::min(1.0f,std::min(y,239-y)/26.0f);
+            const float sx=fx*fx*(3.f-2.f*fx), sy=fy*fy*(3.f-2.f*fy);
+            uint8_t* dst=&g_theme_base[(size_t)theme_index(x,y)*3];
+            dst[0]=(uint8_t)(38.f*sx*sy+0.5f);
+            dst[1]=(uint8_t)(32.f*sx*sy+0.5f);
+            dst[2]=(uint8_t)(28.f*sx*sy+0.5f);
         }
-        const uint16_t p=theme_rgb(r*255/(25*31),g*255/(25*63),b*255/(25*31));
-        (pass?blurred:horizontal)[y*t.w+x]=p;
+        return;
+    }
+    const int chapter=target;
+    if(!g_chapter_surface_ready[chapter]) {
+        memset(g_theme_base,0,320*240*3);
+        return;
+    }
+    const auto& t=kChapterSurfaces[chapter];
+    // Blur the repeating tile in float precision (no intermediate RGB565
+    // truncation), wrapping samples at its edges so copies stay seamless.
+    std::vector<float> horiz((size_t)t.w*t.h*3), blurred((size_t)t.w*t.h*3);
+    constexpr float weights[9]={1.f/25.f,2.f/25.f,3.f/25.f,4.f/25.f,5.f/25.f,4.f/25.f,3.f/25.f,2.f/25.f,1.f/25.f};
+    for(int y=0;y<t.h;++y)for(int x=0;x<t.w;++x) {
+        float r=0.f,g=0.f,b=0.f;
+        for(int k=-4;k<=4;++k) {
+            const int sx=(x+k+t.w)%t.w;
+            const uint16_t p=g_chapter_surfaces[chapter][y*t.w+sx];
+            const float w=weights[k+4];
+            r+=((p>>11)&31)*(w/31.f);
+            g+=((p>>5)&63)*(w/63.f);
+            b+=(p&31)*(w/31.f);
+        }
+        float* dst=&horiz[(size_t)(y*t.w+x)*3];
+        dst[0]=r;dst[1]=g;dst[2]=b;
+    }
+    for(int y=0;y<t.h;++y)for(int x=0;x<t.w;++x) {
+        float r=0.f,g=0.f,b=0.f;
+        for(int k=-4;k<=4;++k) {
+            const int sy=(y+k+t.h)%t.h;
+            const float* src=&horiz[(size_t)(sy*t.w+x)*3];
+            const float w=weights[k+4];
+            r+=src[0]*w;g+=src[1]*w;b+=src[2]*w;
+        }
+        float* dst=&blurred[(size_t)(y*t.w+x)*3];
+        dst[0]=r;dst[1]=g;dst[2]=b;
     }
     for(int y=0;y<240;++y)for(int x=0;x<320;++x) {
-        const uint16_t p=g_chapter_surface_ready[chapter]?blurred[((y/2)%t.h)*t.w+(x/2)%t.w]:0;
-        // Smooth fades to black at the four edges, computed only when
-        // the cached backdrop changes. UI text is composited afterwards.
+        const float u=(x+0.5f)*0.5f-0.5f;
+        const float v=(y+0.5f)*0.5f-0.5f;
+        const int ix0=(int)(u+(float)t.w)-t.w;
+        const int iy0=(int)(v+(float)t.h)-t.h;
+        const float tx=u-(float)ix0, ty=v-(float)iy0;
+        const int x0=(ix0+t.w)%t.w, x1=(x0+1)%t.w;
+        const int y0=(iy0+t.h)%t.h, y1=(y0+1)%t.h;
+        const float* p00=&blurred[(size_t)(y0*t.w+x0)*3];
+        const float* p10=&blurred[(size_t)(y0*t.w+x1)*3];
+        const float* p01=&blurred[(size_t)(y1*t.w+x0)*3];
+        const float* p11=&blurred[(size_t)(y1*t.w+x1)*3];
+        const float w00=(1.f-tx)*(1.f-ty), w10=tx*(1.f-ty), w01=(1.f-tx)*ty, w11=tx*ty;
+        const float cr=p00[0]*w00+p10[0]*w10+p01[0]*w01+p11[0]*w11;
+        const float cg=p00[1]*w00+p10[1]*w10+p01[1]*w01+p11[1]*w11;
+        const float cb=p00[2]*w00+p10[2]*w10+p01[2]*w01+p11[2]*w11;
         const float fx=std::min(1.0f,std::min(x,319-x)/38.0f);
         const float fy=std::min(1.0f,std::min(y,239-y)/26.0f);
-        const float sx=fx*fx*(3-2*fx),sy=fy*fy*(3-2*fy);
-        const int light=int(100*sx*sy);
-        g_theme_base[theme_index(x,y)]=theme_rgb(((p>>11)&31)*light/31,((p>>5)&63)*light/63,(p&31)*light/31);
+        const float sx=fx*fx*(3.f-2.f*fx), sy=fy*fy*(3.f-2.f*fy);
+        const float shade=100.f*sx*sy;
+        uint8_t* dst=&g_theme_base[(size_t)theme_index(x,y)*3];
+        dst[0]=(uint8_t)std::clamp((int)(cb*shade+0.5f),0,255);
+        dst[1]=(uint8_t)std::clamp((int)(cg*shade+0.5f),0,255);
+        dst[2]=(uint8_t)std::clamp((int)(cr*shade+0.5f),0,255);
     }
 }
-void game_sprite(uint16_t* dest,const uint8_t* image,int w,int h,int x,int y) {
+void game_sprite(uint8_t* dest,const uint8_t* image,int w,int h,int x,int y) {
     for(int yy=0;yy<h;++yy)for(int xx=0;xx<w;++xx){const auto* p=image+(yy*w+xx)*4;game_blend(dest,x+xx,y+yy,p[0],p[1],p[2],p[3]);}
 }
 // One ROM-derived tail for each spare life. Crop transparent margins so
 // normal counts sit beside LIVES; large counts wrap within the header.
-void game_lives(uint16_t* dest,uint16_t colour) {
+void game_lives(uint8_t* dest,uint16_t colour) {
     if(g_conker_lives_display==2)return;
     if(g_conker_lives_display==0)game_text(dest,"LIVES",12,14,46,colour);
     if(!g_life_icon_ready || g_conker_lives<=0)return;
@@ -360,11 +420,11 @@ void game_lives(uint16_t* dest,uint16_t colour) {
     }
 }
 // Original pause-menu artwork, placed in the bottom screen's corners.
-void game_scaled_sprite(uint16_t* dest,const uint8_t* image,int source_w,int source_h,int x,int y,int w,int h,int alpha=255) {
+void game_scaled_sprite(uint8_t* dest,const uint8_t* image,int source_w,int source_h,int x,int y,int w,int h,int alpha=255) {
     for(int yy=0;yy<h;++yy)for(int xx=0;xx<w;++xx){const auto* p=image+((yy*source_h/h)*source_w+xx*source_w/w)*4;
         game_blend(dest,x+xx,y+yy,p[0],p[1],p[2],p[3]*alpha/255);}
 }
-void game_health_money(uint16_t* dest) {
+void game_health_money(uint8_t* dest) {
     if(g_conker_health_visible && g_conker_health>=0 && g_chocolate_ready)
         for(int i=0;i<6;++i)game_scaled_sprite(dest,g_chocolate_icon,kLifeIconSize,kLifeIconSize,
             224+(i%3)*27,5+(i/3)*26,26,26,i<g_conker_health?255:48);
@@ -375,10 +435,10 @@ void game_health_money(uint16_t* dest) {
             game_scaled_sprite(dest,g_life_digits[*c-'0'],32,32,x,201,24,24);
     }
 }
-void game_rect(uint16_t* dest,int x,int y,int w,int h,int r,int g,int b,int a) {
+void game_rect(uint8_t* dest,int x,int y,int w,int h,int r,int g,int b,int a) {
     for(int yy=y;yy<y+h;++yy)for(int xx=x;xx<x+w;++xx)game_blend(dest,xx,yy,r,g,b,a);
 }
-void game_box(uint16_t* dest,int x,int y,int w,int h,int r,int g,int b,int a) {
+void game_box(uint8_t* dest,int x,int y,int w,int h,int r,int g,int b,int a) {
     for(int xx=x;xx<x+w;++xx){game_blend(dest,xx,y,r,g,b,a);game_blend(dest,xx,y+h-1,r,g,b,a);}
     for(int yy=y+1;yy<y+h-1;++yy){game_blend(dest,x,yy,r,g,b,a);game_blend(dest,x+w-1,yy,r,g,b,a);}
 }
@@ -423,7 +483,7 @@ inline constexpr const char* kTrophy16[16]={
     "...OOOOOOOOOO...",
     "................"
 };
-void game_ach_icon(uint16_t* dest,int x,int y,bool unlocked,AchTier tier=AchTier::Gold) {
+void game_ach_icon(uint8_t* dest,int x,int y,bool unlocked,AchTier tier=AchTier::Gold) {
     if(unlocked){
         const AchStyle& s=conker_ach_style(tier);
         for(int yy=0;yy<15;++yy)for(int xx=0;xx<16;++xx){
@@ -456,12 +516,12 @@ void game_ach_icon(uint16_t* dest,int x,int y,bool unlocked,AchTier tier=AchTier
         else if(c=='K')game_blend(dest,x+2+xx,y+2+yy,35,38,44,240);
     }
 }
-void compose_conker_panel(uint16_t* dest) {
+void compose_conker_panel(uint8_t* dest) {
     static char previous_notice[41]{};
     char notice[41];game_line(notice,27);
     if(strcmp(previous_notice,notice)){strcpy(previous_notice,notice);g_conker_notice_until=notice[0]?svcGetSystemTick()+SYSCLOCK_ARM11*4:0;}
     game_background();
-    memcpy(dest,g_theme_base,320*240*sizeof(uint16_t));
+    memcpy(dest,g_theme_base,320*240*3);
     const uint16_t white=theme_rgb(255,255,255),yellow=theme_rgb(255,223,70),red=theme_rgb(255,110,95),muted=theme_rgb(160,166,174);
     char line[41];
     if(!g_conker_rdram && g_game_font_ready){
@@ -496,7 +556,7 @@ void compose_conker_panel(uint16_t* dest) {
             game_text(dest,conker_menu::labels[tab],x0+w/2,42,w-6,active?yellow:white,true);
             if(active)for(int x=x0+4;x<x0+w-4;++x)game_blend(dest,x,57,255,223,70,150);
         }
-        const bool ach_page=!strcmp(g_conker_section_title,"Achievements");
+        const bool ach_page=!strcmp(g_conker_section_title,"Trophies");
         AchTier selected_tier=AchTier::Gold;
         for(int slot=0;slot<7;++slot){
             const int row=7+slot*2, y=60+slot*20;
@@ -525,24 +585,40 @@ void compose_conker_panel(uint16_t* dest) {
                 game_rect(dest,240,y+2,68,14,unlocked?st.bg_r:38,unlocked?st.bg_g:42,unlocked?st.bg_b:48,145);
                 game_text(dest,unlocked?"EARNED":"LOCKED",274,y+4,62,unlocked?tier_col:muted,true);
             }else{
-                // Larger touch rows, a restrained gold selection and separate
-                // value controls keep Conker's font/artwork as the visual focus.
+                const AchStyle& sv=conker_ach_style(AchTier::Silver);
+                const AchStyle& gd=conker_ach_style(AchTier::Gold);
                 const bool disabled=g_game_inks[row][2]==3;
-                if(selected)for(int yy=y;yy<y+19;++yy)for(int xx=8;xx<316;++xx)
-                    game_blend(dest,xx,yy,disabled?72:112,disabled?72:82,disabled?72:24,disabled?45:55);
-                if(selected)for(int yy=y+2;yy<y+17;++yy)for(int xx=9;xx<12;++xx)
-                    game_blend(dest,xx,yy,disabled?130:255,disabled?130:223,disabled?130:70,190);
+                if(disabled){
+                    if(selected){
+                        game_rect(dest,8,y,304,18,sv.lk_r,sv.lk_g,sv.lk_b,120);
+                        game_box(dest,8,y,304,18,gd.hi_r,gd.hi_g,gd.hi_b,180);
+                    }else{
+                        game_rect(dest,8,y,304,18,22,26,32,95);
+                        game_box(dest,8,y,304,18,76,82,92,115);
+                    }
+                }else if(selected){
+                    game_rect(dest,8,y,304,18,gd.bg_r,gd.bg_g,gd.bg_b,120);
+                    game_box(dest,8,y,304,18,gd.hi_r,gd.hi_g,gd.hi_b,210);
+                    game_rect(dest,9,y+2,3,14,255,223,70,220);
+                }else{
+                    game_rect(dest,8,y,304,18,sv.bg_r*60/100,sv.bg_g*60/100,sv.bg_b*60/100,90);
+                    game_box(dest,8,y,304,18,sv.hi_r*75/100,sv.hi_g*75/100,sv.hi_b*75/100,130);
+                }
                 const uint16_t text_col=disabled?muted:(selected?yellow:white);
                 game_text(dest,line,17,y+4,172,text_col);
-                game_text(dest,val,194,y+4,82,text_col);
+                game_text(dest,val,194,y+4,80,text_col);
                 if(!readonly){
+                    const bool is_folder=!strcmp(val,"OPEN");
                     if(!disabled){
-                        for(int yy=y+3;yy<y+17;++yy){game_blend(dest,279,yy,255,223,70,40);game_blend(dest,299,yy,255,223,70,40);}
-                        if(strcmp(val,"OPEN"))game_text(dest,"<",283,y+4,12,yellow);
-                        game_text(dest,">",304,y+4,12,yellow);
+                        if(!is_folder){
+                            game_rect(dest,277,y+2,17,14,255,223,70,35);
+                            game_text(dest,"<",283,y+4,12,yellow);
+                        }
+                        game_rect(dest,295,y+2,15,14,255,223,70,35);
+                        game_text(dest,">",300,y+4,12,yellow);
                     }else{
                         game_text(dest,"<",283,y+4,12,muted);
-                        game_text(dest,">",304,y+4,12,muted);
+                        game_text(dest,">",300,y+4,12,muted);
                     }
                 }
             }
@@ -570,7 +646,9 @@ void compose_conker_panel(uint16_t* dest) {
                 const bool hidden=!strcmp(g_conker_subnote,"???");
                 game_text(dest,g_conker_subnote,14,222,292,hidden?muted:desc_col);
             }else{
-                game_text(dest,g_conker_subnote,8,224,304,yellow);
+                game_rect(dest,8,218,304,19,18,22,28,150);
+                game_box(dest,8,218,304,19,76,82,92,130);
+                game_text(dest,g_conker_subnote,14,222,292,yellow);
             }
         }
     }

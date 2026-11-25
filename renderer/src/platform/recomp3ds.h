@@ -315,6 +315,7 @@ const uint8_t* screen_conker_save_tail(int crop[4]);
 void screen_conker_set_lives_display(int mode);
 void screen_conker_set_chapter_display(int visible);
 void screen_conker_set_gfx_text(int visible);
+void screen_conker_set_background(int style);
 void screen_conker_set_subnote(const char* text);
 void screen_conker_set_rdram(const uint8_t* rdram);
 void screen_conker_set_player_camera_query(bool (*active)());

@@ -136,6 +136,8 @@ void apply_achievement_popups(int v) { g_achievement_popups.store(v != 0); }
 int g_animated_tails=1,g_health_display=1,g_money_display=1;
 int g_lives_display=1,g_chapter_display=1,g_gfx_text=0;
 const char* const kLivesDisplay[]={"Full","Icons only","Hidden"};
+int g_bottom_background=0;
+const char* const kBottomBgNames[]={"Pub floor","Castle stone","Castle brick","Cobblestone","Slate blocks","Bank vault","Solid dark"};
 const char* const kOptionsButtonNames[] = { "Off", "On" };
 int g_free_camera_value = 1;
 const char* const kFreeCameraNames[] = { "Original", "Free orbit", "Over shoulder" };
@@ -348,6 +350,7 @@ const MenuOption kOptions[] = {
     {"ach_35","What a Day",0,0,&g_ach_values[35],&g_ach_statuses[35],apply_achievement_row<35>,PageGame},
     {"ach_36","Every Chapter",0,0,&g_ach_values[36],&g_ach_statuses[36],apply_achievement_row<36>,PageGame},
     {"face_camera","Face-button camera",0,1,&g_face_camera_value,kFaceCameraNames,apply_face_camera,PageControls},
+    {"bottom_background","Background",0,6,&g_bottom_background,kBottomBgNames,screen_conker_set_background,PageGame},
     {"bottom_health","Chocolate health",0,1,&g_health_display,kOffOn,screen_conker_set_health_display,PageGame},
     {"bottom_money","Money display",0,1,&g_money_display,kOffOn,screen_conker_set_money_display,PageGame},
     {"bottom_animated_tails","Animated tails",0,1,&g_animated_tails,kOffOn,screen_conker_set_animated_tails,PageGame},

@@ -195,8 +195,7 @@ uint32_t g_release_ms = 0;
 // Text records and the completed LCD image have separate storage.
 bool g_conker_theme = false, g_conker_menu = false;
 uint16_t* g_theme_text = nullptr;
-uint16_t* g_theme_base = nullptr;
-uint16_t* g_theme_output = nullptr;
+uint8_t* g_theme_base = nullptr;
 constexpr int theme_index(int x, int y) { return x * 240 + 239 - y; }
 constexpr uint16_t theme_rgb(int r, int g, int b) {
     return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
@@ -254,28 +253,35 @@ void recomp3ds::log_init(const char* base_path) {
 extern "C" int conker_launcher_draw(const ConkerLauncherView* view) {
     if(!view || !g_game_font_ready)return 0;
     if(g_launcher_backdrop.empty()){
-        g_launcher_backdrop.resize(320*240);g_launcher_canvas.resize(320*240);
+        g_launcher_backdrop.resize(320*240*3);g_launcher_canvas.resize(320*240*3);
         auto* saved=g_theme_base;const int chapter=g_background_chapter;
         g_theme_base=g_launcher_backdrop.data();g_background_chapter=-1;game_background();
         g_theme_base=saved;g_background_chapter=chapter;
+        gfxSetScreenFormat(GFX_TOP,GSP_BGR8_OES);
+        gfxSetScreenFormat(GFX_BOTTOM,GSP_BGR8_OES);
     }
     for(int screen=0;screen<2;++screen){
         const bool top=screen==0;
         launcher_compose(g_launcher_canvas.data(),*view,top);
-        u16 w=0,h=0;auto* fb=(uint16_t*)gfxGetFramebuffer(top?GFX_TOP:GFX_BOTTOM,GFX_LEFT,&w,&h);
+        const gfxScreen_t scr=top?GFX_TOP:GFX_BOTTOM;
+        const bool bgr8=gfxGetScreenFormat(scr)==GSP_BGR8_OES;
+        u16 w=0,h=0;u8* fb=gfxGetFramebuffer(scr,GFX_LEFT,&w,&h);
         if(!fb)continue;
         const int width=top?400:320,offset=(width-320)/2;
         for(int x=0;x<width;++x)for(int y=0;y<240;++y){
             const int sx=x-offset;
             const bool in_canvas=(sx>=0 && sx<320);
             const bool in_wide_panel=(top && x>=16 && x<width-16);
-            fb[x*240+239-y]=in_canvas?g_launcher_canvas[theme_index(sx,y)]:in_wide_panel?g_launcher_canvas[theme_index(sx<0?0:319,y)]:g_launcher_backdrop[theme_index(x<offset?0:319,y)];
+            const uint8_t* p=in_canvas?&g_launcher_canvas[(size_t)theme_index(sx,y)*3]:in_wide_panel?&g_launcher_canvas[(size_t)theme_index(sx<0?0:319,y)*3]:&g_launcher_backdrop[(size_t)theme_index(x<offset?0:319,y)*3];
+            const int di=x*240+239-y;
+            if(bgr8){fb[(size_t)di*3+0]=p[0];fb[(size_t)di*3+1]=p[1];fb[(size_t)di*3+2]=p[2];}
+            else ((uint16_t*)fb)[di]=theme_rgb(p[2],p[1],p[0]);
         }
     }
     gfxFlushBuffers();gfxSwapBuffers();return 1;
 }
 extern "C" void conker_launcher_finish() {
-    std::vector<uint16_t>().swap(g_launcher_backdrop);std::vector<uint16_t>().swap(g_launcher_canvas);
+    std::vector<uint8_t>().swap(g_launcher_backdrop);std::vector<uint8_t>().swap(g_launcher_canvas);
 }
 
 extern "C" void recomp3ds_save_activity(int active) {g_save_indicator.signal(active!=0);}
@@ -294,6 +300,7 @@ void recomp3ds::screen_conker_set_animated_tails(int enabled) {g_conker_animated
 void recomp3ds::screen_conker_set_lives_display(int mode) {g_conker_lives_display=std::clamp(mode,0,2);g_screen_dirty=true;}
 void recomp3ds::screen_conker_set_chapter_display(int visible) {g_conker_chapter_visible=visible!=0;g_screen_dirty=true;}
 void recomp3ds::screen_conker_set_gfx_text(int visible) {g_conker_gfx_text=visible!=0;g_screen_dirty=true;}
+void recomp3ds::screen_conker_set_background(int style) { g_conker_bg_style=std::clamp(style,0,6); g_background_chapter=-1; g_screen_dirty=true; }
 bool recomp3ds::screen_conker_options_visible() { return g_conker_options_visible; }
 bool recomp3ds::screen_conker_load_rom(const char* path) { return load_conker_ui(path); }
 bool recomp3ds::screen_conker_theme() { return g_conker_theme && g_theme_text != nullptr; }
@@ -325,14 +332,22 @@ void recomp3ds::screen_init(PrintConsole* console) {
     g_console = console;
     if (g_conker_theme && console) {
         g_theme_text = (uint16_t*)calloc(320*240,sizeof(uint16_t));
-        g_theme_base = (uint16_t*)malloc(320*240*sizeof(uint16_t));
-        g_theme_output = (uint16_t*)malloc(320*240*sizeof(uint16_t));
-        if (!g_theme_text || !g_theme_base || !g_theme_output) {
-            free(g_theme_text);free(g_theme_base);free(g_theme_output);g_theme_text=g_theme_base=g_theme_output=nullptr;
+        g_theme_base = (uint8_t*)malloc(320*240*3);
+        if (!g_theme_text || !g_theme_base) {
+            free(g_theme_text);free(g_theme_base);g_theme_text=nullptr;g_theme_base=nullptr;
             g_conker_theme=false;
         } else {
             make_conker_panel();
+            gfxSetScreenFormat(GFX_BOTTOM,GSP_BGR8_OES);
             gfxSetDoubleBuffering(GFX_BOTTOM,true);
+            for (int buffer = 0; buffer < 2; ++buffer) {
+                u16 w = 0, h = 0;
+                u8* pixels = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, &w, &h);
+                if (pixels) memset(pixels, 0, (size_t)w * h * 3);
+                gfxFlushBuffers();
+                gfxScreenSwapBuffers(GFX_BOTTOM,false);
+                gspWaitForVBlank();
+            }
             console->frameBuffer=g_theme_text;
             g_screen_dirty=true;
         }
@@ -355,7 +370,7 @@ void recomp3ds::show_top_notice(const char* text, uint32_t duration_ms) {
 
 void recomp3ds::screen_bottom_update(bool hud) {
     if (g_console == nullptr) return;
-    if (screen_conker_theme() && !hud) return;
+    if (screen_conker_theme()) return;
     if (hud) {
         if (!g_on_shadow) {
             size_t bytes = 0;
@@ -462,7 +477,7 @@ void recomp3ds::screen_flush() {
     const u32 bytes = (u32)w * h * gspGetBytesPerPixel(gfxGetScreenFormat(GFX_BOTTOM));
     if (screen_conker_theme()) {
         LightLock_Lock(&g_screen_lock);
-        compose_conker_panel((uint16_t*)fb);
+        compose_conker_panel(fb);
         LightLock_Unlock(&g_screen_lock);
     }
     svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)fb, bytes);

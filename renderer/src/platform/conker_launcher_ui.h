@@ -1,15 +1,15 @@
 // Copyright (c) 2026 Raihwy3. MIT.
 // Software startup panels using only artwork/font decoded from the user's ROM.
-std::vector<uint16_t> g_launcher_backdrop, g_launcher_canvas;
-void launcher_rect(uint16_t* out,int x,int y,int w,int h,int r,int g,int b,int alpha=255) {
+std::vector<uint8_t> g_launcher_backdrop, g_launcher_canvas;
+void launcher_rect(uint8_t* out,int x,int y,int w,int h,int r,int g,int b,int alpha=255) {
     for(int yy=y;yy<y+h;++yy)for(int xx=x;xx<x+w;++xx)game_blend(out,xx,yy,r,g,b,alpha);
 }
-void launcher_panel(uint16_t* out,int x,int y,int w,int h) {
+void launcher_panel(uint8_t* out,int x,int y,int w,int h) {
     launcher_rect(out,x,y,w,h,24,16,8,150);
     launcher_rect(out,x,y,w,1,194,145,60,180);
     launcher_rect(out,x,y+h-1,w,1,96,63,25,180);
 }
-void launcher_wrap(uint16_t* out,const char* text,int x,int y,int width,int lines,uint16_t colour) {
+void launcher_wrap(uint8_t* out,const char* text,int x,int y,int width,int lines,uint16_t colour) {
     if(!text)return;
     char line[128]{};int used=0;
     while(*text && lines>0){
@@ -27,13 +27,13 @@ void launcher_wrap(uint16_t* out,const char* text,int x,int y,int width,int line
     }
     if(used && lines>0)game_text(out,line,x,y,width,colour);
 }
-void launcher_footer(uint16_t* out,bool top=false) {
+void launcher_footer(uint8_t* out,bool top=false) {
     const auto gold=theme_rgb(235,192,94);
     launcher_rect(out,top?0:16,211,top?320:288,1,168,125,55,150);
     game_text(out,"CONKER: 3DS RECOMP  " CONKER_LAUNCHER_VERSION,160,220,286,gold,true);
 }
-void launcher_compose(uint16_t* out,const ConkerLauncherView& v,bool top) {
-    memcpy(out,g_launcher_backdrop.data(),320*240*2);
+void launcher_compose(uint8_t* out,const ConkerLauncherView& v,bool top) {
+    memcpy(out,g_launcher_backdrop.data(),320*240*3);
     const auto gold=theme_rgb(255,218,105),white=theme_rgb(245,235,212),muted=theme_rgb(188,172,143);
     if(top){
         game_text(out,"CONKER:",160,14,280,gold,true);
