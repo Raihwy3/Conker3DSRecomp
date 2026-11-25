@@ -7,6 +7,7 @@
 #include "recomp.h"
 #include "conker_options.h"
 #include "rt64_3ds.h"
+#include "conker_cheats.h"
 #include "conker_note_release.h"
 #include "librecomp/addresses.hpp"
 #include <3ds.h>
@@ -92,6 +93,8 @@ struct PhotoState {
     float yaw = 0, pitch = 0;
     uint32_t prev_held = 0;
 } g_photo;
+
+conker_cheats::State g_cheats;
 }
 extern "C" void conker_skip_intro_logos(uint8_t* rdram,recomp_context* ctx){
     // Scene loading must be established first. The PC mod also waits ten
@@ -162,39 +165,12 @@ extern "C" void conker_cutscene_skip_tick(uint8_t* rdram, recomp_context*) {
 extern "C" int conker_frame_update_hook(uint8_t* rdram, recomp_context* ctx) {
     // Quick Cheats
     const uint32_t scene = (uint32_t)MEM_W(0, addr(0x800BE9F0));
-    if (scene > 0 && scene < 0x100) {
-        static bool prev_inv = false, prev_unlock = false;
-        const bool inv = conker3ds::get("misc_cheat_invincible", 0) != 0;
-        const bool unlock = conker3ds::get("misc_cheat_unlock_all", 0) != 0;
-        if (inv || prev_inv || unlock || prev_unlock) {
-            uint16_t flags = MEM_HU(0, addr(0x8008FDBC));
-            if (inv) {
-                flags |= 0x0001u;
-                if (MEM_BU(0, addr(0x800D2144)) < 6) MEM_B(0, addr(0x800D2144)) = 6;
-            } else if (prev_inv) {
-                flags &= ~0x0001u;
-            }
-            if (unlock) {
-                flags |= 0x0010u;
-                const uint32_t ptr = (uint32_t)MEM_W(0, addr(0x800D2E4C));
-                if (ptr >= 0x80000000u && ptr <= 0x807FFFC0u) {
-                    for (uint32_t i = 0; i < 26; i++) MEM_B(i, addr(ptr)) = 0xFF;
-                }
-            } else if (prev_unlock) {
-                flags &= ~0x0010u;
-            }
-            MEM_H(0, addr(0x8008FDBC)) = (int16_t)flags;
-            prev_inv = inv;
-            prev_unlock = unlock;
-        }
-
-        if (conker3ds::get("misc_cheat_inf_lives", 0)) {
-            if (MEM_BU(0, addr(0x800D2145)) < 99) MEM_B(0, addr(0x800D2145)) = 99;
-        }
-        if (conker3ds::get("misc_cheat_max_cash", 0)) {
-            if (MEM_W(0, addr(0x800D2148)) < 999999) MEM_W(0, addr(0x800D2148)) = 999999;
-        }
-    }
+    conker_cheats::Config cheat_cfg{};
+    cheat_cfg.invincible      = conker3ds::get("misc_cheat_invincible", 0) != 0;
+    cheat_cfg.inf_lives       = conker3ds::get("misc_cheat_inf_lives", 0) != 0;
+    cheat_cfg.max_cash        = conker3ds::get("misc_cheat_max_cash", 0) != 0;
+    cheat_cfg.unlock_chapters = conker3ds::get("misc_cheat_unlock_all", 0) != 0;
+    g_cheats.apply(rdram, recomp::mem_size, cheat_cfg);
 
     // Photo Mode optional shortcut (default: D-Pad Right)
     if (scene > 0 && scene < 0x100) {

@@ -19,7 +19,7 @@ namespace {
 
 enum Src : uint8_t { S_COMBINED, S_TEX0, S_TEX1, S_PRIM, S_SHADE, S_ENV, S_ONE, S_ZERO,
                      S_COMBINED_A, S_TEX0_A, S_TEX1_A, S_PRIM_A, S_SHADE_A, S_ENV_A,
-                     S_LODFRAC, S_PRIMLODFRAC, S_HALF, S_K5 };
+                     S_LODFRAC, S_PRIMLODFRAC, S_HALF, S_K5, S_BUF, S_BUF_A };
 
 Src map_rgb_a(uint32_t v) {   // A input
     switch (v) { case 0: return S_COMBINED; case 1: return S_TEX0; case 2: return S_TEX1; case 3: return S_PRIM; case 4: return S_SHADE;
@@ -60,6 +60,7 @@ struct Op {                       // one channel's operation on up to 3 sources
     GPU_COMBINEFUNC func;
     Src s[3];
     int n;
+    bool inv[3] = { false, false, false };
 };
 
 // Plans one channel of one cycle into 1 or 2 ops.
@@ -77,6 +78,13 @@ int plan_channel(Src a, Src b, Src c, Src d, Op* ops) {
     }
     if (d == b) {                                    // (a - b) * c + b = lerp(b, a, c)
         ops[0] = { GPU_INTERPOLATE, { a, b, c }, 3 };
+        return 1;
+    }
+    if (a == S_ONE) {                                // (1 - b) * c + d via ONE_MINUS operand
+        if (c == S_ONE && d == S_ZERO) { ops[0] = { GPU_REPLACE, { b, b, b }, 1, { true, false, false } }; return 1; }
+        if (d == S_ZERO) { ops[0] = { GPU_MODULATE, { b, c, c }, 2, { true, false, false } }; return 1; }
+        if (c == S_ONE) { ops[0] = { GPU_ADD, { b, d, d }, 2, { true, false, false } }; return 1; }
+        ops[0] = { GPU_MULTIPLY_ADD, { b, c, d }, 3, { true, false, false } };
         return 1;
     }
     ops[0] = { GPU_SUBTRACT, { a, b, b }, 2 };
@@ -123,6 +131,8 @@ GPU_TEVSRC tev_src(Src s, bool& alpha_operand) {
         case S_TEX1_A: alpha_operand = true; return GPU_TEXTURE1;
         case S_SHADE: return GPU_PRIMARY_COLOR;
         case S_SHADE_A: alpha_operand = true; return GPU_PRIMARY_COLOR;
+        case S_BUF: return GPU_PREVIOUS_BUFFER;
+        case S_BUF_A: alpha_operand = true; return GPU_PREVIOUS_BUFFER;
         case S_PRIM_A: case S_ENV_A: alpha_operand = true; return GPU_CONSTANT;
         default: return GPU_CONSTANT;
     }
@@ -133,10 +143,15 @@ GPU_TEVSRC tev_src(Src s, bool& alpha_operand) {
 // reading alpha) can hold different colours' parts.
 struct ConstSlot {
     bool has_rgb = false, has_a = false;
+    bool locked_rgb = false, locked_a = false;
     uint32_t rgb = 0;
     uint8_t a = 0;
-    bool fits(bool alpha, uint32_t v) const { return alpha ? (!has_a || a == (uint8_t)(v >> 24)) : (!has_rgb || rgb == (v & 0x00FFFFFFu)); }
+    bool fits(bool alpha, uint32_t v) const {
+        if (alpha) return !locked_a && (!has_a || a == (uint8_t)(v >> 24));
+        return !locked_rgb && (!has_rgb || rgb == (v & 0x00FFFFFFu));
+    }
     void take(bool alpha, uint32_t v) { if (alpha) { has_a = true; a = (uint8_t)(v >> 24); } else { has_rgb = true; rgb = v & 0x00FFFFFFu; } }
+    void lock(bool alpha) { if (alpha) locked_a = true; else locked_rgb = true; }
     uint32_t value() const { return rgb | ((uint32_t)a << 24); }
 };
 
@@ -163,7 +178,8 @@ void build_stage(TevStage& st, const Op* rgb, const Op* alpha, const Consts& k, 
         for (int i = 0; i < rgb->n; i++) {
             bool ao;
             st.src_rgb[i] = tev_src(rgb->s[i], ao);
-            st.op_rgb[i] = ao ? GPU_TEVOP_RGB_SRC_ALPHA : GPU_TEVOP_RGB_SRC_COLOR;
+            st.op_rgb[i] = ao ? (rgb->inv[i] ? GPU_TEVOP_RGB_ONE_MINUS_SRC_ALPHA : GPU_TEVOP_RGB_SRC_ALPHA)
+                              : (rgb->inv[i] ? GPU_TEVOP_RGB_ONE_MINUS_SRC_COLOR : GPU_TEVOP_RGB_SRC_COLOR);
             if (st.src_rgb[i] == GPU_CONSTANT) st.src_rgb[i] = place(rgb->s[i], ao);
         }
     }
@@ -173,7 +189,7 @@ void build_stage(TevStage& st, const Op* rgb, const Op* alpha, const Consts& k, 
         for (int i = 0; i < alpha->n; i++) {
             bool ao;
             st.src_a[i] = tev_src(alpha->s[i], ao);
-            st.op_a[i] = GPU_TEVOP_A_SRC_ALPHA;
+            st.op_a[i] = alpha->inv[i] ? GPU_TEVOP_A_ONE_MINUS_SRC_ALPHA : GPU_TEVOP_A_SRC_ALPHA;
             if (st.src_a[i] == GPU_CONSTANT) st.src_a[i] = place(alpha->s[i], true);
         }
     }
@@ -184,10 +200,7 @@ void build_stage(TevStage& st, const Op* rgb, const Op* alpha, const Consts& k, 
 }   // namespace
 
 static void plan_tev_raw(const DrawRecord& d, TevPlan& plan) {
-    plan.stages = 0;
-    plan.combiner_stages = 0;
-    plan.buffer_color = 0;
-    plan.fallbacks = 0;
+    plan = TevPlan{};
     ConstSlot buf;
     Consts k;
     k.prim = (uint32_t)d.prim[0] | ((uint32_t)d.prim[1] << 8) | ((uint32_t)d.prim[2] << 16) | ((uint32_t)d.prim[3] << 24);
@@ -233,25 +246,106 @@ static void plan_tev_raw(const DrawRecord& d, TevPlan& plan) {
     }
 
     int cycles = (cyc == 1) ? 2 : 1;
-    for (int cy = 0; cy < cycles; cy++) {
-        Op rgb[2], alpha[2];
-        auto fr = [&](Src s) { return fold_const(s, false, k); };
-        auto fa = [&](Src s) { return fold_const(s, true, k); };
-        int nr = plan_channel(fr(cy ? a1 : a0), fr(cy ? b1 : b0), fr(cy ? c1 : c0), fr(cy ? d1 : d0), rgb);
-        int na = plan_channel(fa(cy ? Aa1 : Aa0), fa(cy ? Ab1 : Ab0), fa(cy ? Ac1 : Ac0), fa(cy ? Ad1 : Ad0), alpha);
-        // In cycle 0 there is no PREVIOUS: a COMBINED input reads as zero on
-        // real hardware; the PICA's stage-0 PREVIOUS is undefined, so map it
-        // to the constant black.
-        if (cy == 0) {
-            for (int i = 0; i < nr; i++) for (int j = 0; j < rgb[i].n; j++) if (rgb[i].s[j] == S_COMBINED && i == 0) rgb[i].s[j] = S_ZERO;
-            for (int i = 0; i < na; i++) for (int j = 0; j < alpha[i].n; j++) if (alpha[i].s[j] == S_COMBINED_A && i == 0) alpha[i].s[j] = S_ZERO;
-        }
-        int n = nr > na ? nr : na;
-        for (int i = 0; i < n && plan.stages < 6; i++) {
+    auto fr = [&](Src s) { return fold_const(s, false, k); };
+    auto fa = [&](Src s) { return fold_const(s, true, k); };
+    // In cycle 0 there is no PREVIOUS: a COMBINED input reads as zero on real
+    // hardware; the PICA's stage-0 PREVIOUS is undefined, so fold it before
+    // planning cycle 0.
+    auto no_comb = [](Src s) { return (s == S_COMBINED || s == S_COMBINED_A) ? S_ZERO : s; };
+
+    Op rgb0[2], alpha0[2];
+    int nr0 = plan_channel(no_comb(fr(a0)), no_comb(fr(b0)), no_comb(fr(c0)), no_comb(fr(d0)), rgb0);
+    int na0 = plan_channel(no_comb(fa(Aa0)), no_comb(fa(Ab0)), no_comb(fa(Ac0)), no_comb(fa(Ad0)), alpha0);
+
+    if (cycles == 1) {
+        int n0 = nr0 > na0 ? nr0 : na0;
+        for (int i = 0; i < n0 && plan.stages < 6; i++) {
             TevStage& st = plan.stage[plan.stages++];
-            const Op* r = i < nr ? &rgb[i] : nullptr;
-            const Op* a = i < na ? &alpha[i] : nullptr;
+            const Op* r = i < nr0 ? &rgb0[i] : nullptr;
+            const Op* a = i < na0 ? &alpha0[i] : nullptr;
             // When one channel finishes early its later stages pass PREVIOUS.
+            build_stage(st, r, a, k, buf, plan.fallbacks);
+        }
+    }
+    else {
+        // Collapse trivial Cycle 0 pass-throughs (e.g. TEX0 or 0/1) directly
+        // into Cycle 1 so Cycle 1 stages don't clobber or depend on Cycle 0.
+        auto is_pass = [](int n, const Op* ops) {
+            if (n != 1 || ops[0].func != GPU_REPLACE || ops[0].inv[0]) return false;
+            const Src s = ops[0].s[0];
+            return !is_const(s) || s == S_ZERO || s == S_ONE;
+        };
+        const bool pass_rgb = is_pass(nr0, rgb0);
+        const bool pass_a = is_pass(na0, alpha0);
+        auto sub_rgb = [&](Src s) {
+            if (pass_rgb && s == S_COMBINED) return rgb0[0].s[0];
+            if (pass_a && s == S_COMBINED_A) return alpha0[0].s[0];
+            return s;
+        };
+        auto sub_a = [&](Src s) {
+            return (pass_a && s == S_COMBINED_A) ? alpha0[0].s[0] : s;
+        };
+
+        Op rgb1[2], alpha1[2];
+        int nr1 = plan_channel(fr(sub_rgb(a1)), fr(sub_rgb(b1)), fr(sub_rgb(c1)), fr(sub_rgb(d1)), rgb1);
+        int na1 = plan_channel(fa(sub_a(Aa1)), fa(sub_a(Ab1)), fa(sub_a(Ac1)), fa(sub_a(Ad1)), alpha1);
+
+        // Ops[1].s[0] in a 2-op cycle always reads ops[0] (GPU_PREVIOUS),
+        // never Cycle 0's output; check Cycle 0 references from start_j.
+        auto op_reads = [](const Op& op, int start_j, Src target) {
+            for (int j = start_j; j < op.n; j++) if (op.s[j] == target) return true;
+            return false;
+        };
+        const bool c0_rgb_live = op_reads(rgb1[0], 0, S_COMBINED) || (nr1 == 2 && op_reads(rgb1[1], 1, S_COMBINED));
+        const bool c0_a_live = op_reads(rgb1[0], 0, S_COMBINED_A) || (nr1 == 2 && op_reads(rgb1[1], 1, S_COMBINED_A)) ||
+                               op_reads(alpha1[0], 0, S_COMBINED_A) || (na1 == 2 && op_reads(alpha1[1], 1, S_COMBINED_A));
+        if (!c0_rgb_live) nr0 = 0;
+        if (!c0_a_live) na0 = 0;
+
+        const int n0 = nr0 > na0 ? nr0 : na0;
+        for (int i = 0; i < n0 && plan.stages < 6; i++) {
+            TevStage& st = plan.stage[plan.stages++];
+            Op pass_rgb_op = { GPU_REPLACE, { S_SHADE, S_SHADE, S_SHADE }, 1 };
+            Op pass_a_op = { GPU_REPLACE, { S_SHADE_A, S_SHADE_A, S_SHADE_A }, 1 };
+            const Op* r = i < nr0 ? &rgb0[i] : (i == 0 ? &pass_rgb_op : nullptr);
+            const Op* a = i < na0 ? &alpha0[i] : (i == 0 ? &pass_a_op : nullptr);
+            build_stage(st, r, a, k, buf, plan.fallbacks);
+        }
+
+        // Preserve Cycle 0's result across a 2-op Cycle 1 stage when Cycle 1's
+        // first op overwrites GPU_PREVIOUS before its second op reads Cycle 0.
+        const bool delay_a = (nr1 == 2 && na1 == 1 && op_reads(rgb1[1], 1, S_COMBINED_A));
+        const bool save_rgb = (nr1 == 2 && op_reads(rgb1[1], 1, S_COMBINED));
+        const bool save_a = (na1 == 2 && op_reads(alpha1[1], 1, S_COMBINED_A)) ||
+                            (nr1 == 2 && na1 == 2 && op_reads(rgb1[1], 1, S_COMBINED_A));
+        const int c0_end = plan.stages - 1;
+        if (c0_end >= 0 && c0_end < 4) {
+            if (save_rgb) {
+                plan.buf_update_rgb |= (uint8_t)(1u << c0_end);
+                for (int j = 1; j < rgb1[1].n; j++) if (rgb1[1].s[j] == S_COMBINED) rgb1[1].s[j] = S_BUF;
+            }
+            if (save_a) {
+                plan.buf_update_a |= (uint8_t)(1u << c0_end);
+                if (na1 == 2) {
+                    for (int j = 1; j < alpha1[1].n; j++) if (alpha1[1].s[j] == S_COMBINED_A) alpha1[1].s[j] = S_BUF_A;
+                }
+                if (nr1 == 2) {
+                    for (int j = 1; j < rgb1[1].n; j++) if (rgb1[1].s[j] == S_COMBINED_A) rgb1[1].s[j] = S_BUF_A;
+                }
+            }
+        }
+
+        const int n1 = nr1 > na1 ? nr1 : na1;
+        for (int i = 0; i < n1 && plan.stages < 6; i++) {
+            // Starting at stage c0_end + 2 (i == 1), updated buffer channels hold
+            // Cycle 0's output instead of buffer_color.
+            if (i == 1) {
+                if (save_rgb) buf.lock(false);
+                if (save_a) buf.lock(true);
+            }
+            TevStage& st = plan.stage[plan.stages++];
+            const Op* r = i < nr1 ? &rgb1[i] : nullptr;
+            const Op* a = delay_a ? (i == 1 ? &alpha1[0] : nullptr) : (i < na1 ? &alpha1[i] : nullptr);
             build_stage(st, r, a, k, buf, plan.fallbacks);
         }
     }
@@ -272,6 +366,8 @@ static void plan_tev_raw(const DrawRecord& d, TevPlan& plan) {
             Op pass_a = { GPU_REPLACE, { S_SHADE_A, S_SHADE_A, S_SHADE_A }, 1 };
             ConstSlot none;
             build_stage(st, &pass, &pass_a, k, none, plan.fallbacks);
+            plan.buf_update_rgb = (uint8_t)((plan.buf_update_rgb << 1) & 0xFu);
+            plan.buf_update_a = (uint8_t)((plan.buf_update_a << 1) & 0xFu);
         }
         else plan.fallbacks++;
     }
@@ -374,15 +470,21 @@ void plan_tev(const DrawRecord& d, TevPlan& plan) {
     }
 }
 
-void apply_tev(const TevPlan& plan) {
-    // The buffer colour is the plan's second constant: no stage writes the
-    // buffer, so every PREVIOUS_BUFFER read returns it.
-    C3D_TexEnvBufUpdate(C3D_Both, 0);
-    C3D_TexEnvBufColor(plan.buffer_color);
+void apply_tev(const TevPlan& plan, const TevPlan* prev) {
+    const bool full = (prev == nullptr || prev->stages < 0);
+    // The buffer colour is the plan's second constant; updated stages latch
+    // into it two stages later for PREVIOUS_BUFFER reads.
+    if (full || plan.buf_update_rgb != prev->buf_update_rgb)
+        C3D_TexEnvBufUpdate(C3D_RGB, plan.buf_update_rgb);
+    if (full || plan.buf_update_a != prev->buf_update_a)
+        C3D_TexEnvBufUpdate(C3D_Alpha, plan.buf_update_a);
+    if (full || plan.buffer_color != prev->buffer_color)
+        C3D_TexEnvBufColor(plan.buffer_color);
     for (int i = 0; i < 6; i++) {
-        C3D_TexEnv* env = C3D_GetTexEnv(i);
         if (i < plan.stages) {
             const TevStage& st = plan.stage[i];
+            if (!full && i < prev->stages && st == prev->stage[i]) continue;
+            C3D_TexEnv* env = C3D_GetTexEnv(i);
             C3D_TexEnvInit(env);
             C3D_TexEnvSrc(env, C3D_RGB, st.src_rgb[0], st.src_rgb[1], st.src_rgb[2]);
             C3D_TexEnvSrc(env, C3D_Alpha, st.src_a[0], st.src_a[1], st.src_a[2]);
@@ -392,7 +494,8 @@ void apply_tev(const TevPlan& plan) {
             C3D_TexEnvFunc(env, C3D_Alpha, st.func_a);
             C3D_TexEnvColor(env, st.constant);
         }
-        else {
+        else if (full || i < prev->stages) {
+            C3D_TexEnv* env = C3D_GetTexEnv(i);
             C3D_TexEnvInit(env);
             C3D_TexEnvSrc(env, C3D_Both, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
             C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);

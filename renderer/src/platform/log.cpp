@@ -16,6 +16,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <algorithm>
+#include <atomic>
 #include <vector>
 #include "miniz/miniz.h"
 #include <unistd.h>
@@ -33,6 +34,7 @@
 namespace {
 
 recomp3ds::SaveIndicator g_save_indicator;
+std::atomic<bool> g_loading_indicator_enabled{true};
 char g_line[512];
 int g_len = 0;
 FILE* g_file = nullptr;
@@ -291,6 +293,21 @@ const uint8_t* recomp3ds::screen_conker_save_tail(int crop[4]) {
     std::copy(g_tail_crop,g_tail_crop+4,crop);
     return g_tail_frames[(now/(SYSCLOCK_ARM11/30))%kTailFrames];
 }
+void recomp3ds::screen_conker_set_loading_indicator(int enabled) {
+    g_loading_indicator_enabled.store(enabled != 0, std::memory_order_relaxed);
+}
+bool recomp3ds::screen_conker_loading_indicator_enabled() {
+    return g_loading_indicator_enabled.load(std::memory_order_relaxed);
+}
+bool recomp3ds::screen_conker_level_switching() {
+    const uint8_t* rdram = g_conker_rdram;
+    if (!rdram) return false;
+    const uint8_t s = rdram[0xBE615 ^ 3];
+    return s == 1 || s == 2 || s == 3 || s == 5;
+}
+bool recomp3ds::screen_conker_render_loading(int dots, uint32_t* out, int& out_w, int& out_h) {
+    return render_conker_loading_rgba8(dots, out, out_w, out_h);
+}
 
 void recomp3ds::screen_set_conker_theme(bool enabled) { g_conker_theme = enabled; }
 void recomp3ds::screen_conker_set_options_button(int visible) { g_conker_options_visible=visible!=0;g_screen_dirty=true; }
@@ -359,7 +376,7 @@ void recomp3ds::screen_conker_quit_prompt(bool show,bool restarts) {
 }
 
 void recomp3ds::show_top_notice(const char* text, uint32_t duration_ms) {
-    static uint32_t toast_buf[184 * 34];
+    static uint32_t toast_buf[256 * 64];
     int tw = 0, th = 0;
     if (render_conker_toast_rgba8(text, toast_buf, tw, th)) {
         rt64_3ds::show_top_notice_rgba8(toast_buf, tw, th, duration_ms);

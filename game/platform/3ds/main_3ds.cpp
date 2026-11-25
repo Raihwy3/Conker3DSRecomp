@@ -124,6 +124,7 @@ const MenuDefault kDefaults[] = {
     { "shoulder_swap_button", 1 },
     { "aim_swap_sticks", 0 },
     { "achievement_popups", 1 },
+    { "loading_indicator", 1 },
 };
 
 int g_touch_mode = 1;
@@ -133,6 +134,7 @@ void apply_face_camera(int v){recomp3ds::input_set_face_camera(v!=0);}
 int g_options_button = 1;
 int g_achievement_popups_value = 1;
 void apply_achievement_popups(int v) { g_achievement_popups.store(v != 0); }
+int g_loading_indicator_value = 1;
 int g_animated_tails=1,g_health_display=1,g_money_display=1;
 int g_lives_display=1,g_chapter_display=1,g_gfx_text=0;
 const char* const kLivesDisplay[]={"Full","Icons only","Hidden"};
@@ -361,6 +363,8 @@ const MenuOption kOptions[] = {
       screen_conker_set_options_button, PageGame },
     { "achievement_popups", "Achievement popups", 0, 1, &g_achievement_popups_value, kOffOn,
       apply_achievement_popups, PageGame },
+    { "loading_indicator", "Loading indicator", 0, 1, &g_loading_indicator_value, kOffOn,
+      screen_conker_set_loading_indicator, PageGame },
     { "free_camera", "Camera", 0, 2, &g_free_camera_value, kFreeCameraNames,
       apply_free_camera, PageControls },
     { "recenter_button", "Camera recenter", 0, 5, &g_recenter_button, kRecenterButtonNames,

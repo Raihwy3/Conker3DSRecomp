@@ -26,10 +26,16 @@
 #include "rt64_3ds_texture.h"
 #include "rt64_3ds_tev.h"
 #include "rt64_3ds_stereo.h"
+#include "rt64_3ds_loading.h"
 #include "rt64_3ds_shbin.h"
 #include "ultramodern/extensions.h"
 
-namespace recomp3ds { const uint8_t* screen_conker_save_tail(int crop[4]); }
+namespace recomp3ds {
+const uint8_t* screen_conker_save_tail(int crop[4]);
+bool screen_conker_loading_indicator_enabled();
+bool screen_conker_level_switching();
+bool screen_conker_render_loading(int dots, uint32_t* out, int& out_w, int& out_h);
+}
 
 extern "C" void C3Di_UpdateContext(void);
 // citro3d's own frame split (internal, exported): closes the commands
@@ -117,6 +123,7 @@ std::atomic<uint32_t> g_bottom_see_through{ 0 };    // set_bottom_console_see_th
 std::atomic<uint32_t> g_bottom_last_copy_ms{ 0 };   // 0: none yet
 
 uint32_t now_ms() { return (uint32_t)(svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000)); }
+uint64_t now_ms64() { return svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000); }
 
 struct TopToast {
     std::string text;
@@ -493,7 +500,7 @@ public:
     bool update_config(const ultramodern::renderer::GraphicsConfig&, const ultramodern::renderer::GraphicsConfig&) override { return true; }
     void enable_instant_present() override {}
     void send_dummy_workload(uint32_t fb_address) { (void)fb_address; }
-    void update_screen() override {}
+    void update_screen() override { maybe_draw_loading(); }
     // Runs on the gfx thread when the runtime quits: let the GPU finish what
     // it was given and give citro3d's hooks and queues back before the
     // process closes (C3D_Fini waits for the render queue).
@@ -502,6 +509,14 @@ public:
         stop_reader();
         stop_builder();
         stop_presenter();
+        if (loading_tex_ok_) {
+            C3D_TexDelete(&loading_tex_);
+            loading_tex_ok_ = false;
+        }
+        if (loading_vbo_) {
+            linearFree(loading_vbo_);
+            loading_vbo_ = nullptr;
+        }
         ok_ = false;
         aptUnhook(&g_apt_pre_cookie);
         C3D_Fini();
@@ -972,7 +987,7 @@ public:
                                  "in-between's GPU work, %.1f for the frame's draws; in-between vertices waited %.1f ms a pair; command buffer %u of %u KB; "
                                  "in-betweens transferred by the presenter %u, here %u",
                                  deferred_frames_, (float)acc_presenter_gpu_wait_[0] * pd, (float)acc_presenter_gpu_wait_[1] * pd, (float)acc_vbo_wait_ * pp,
-                                 (unsigned)(dbuf_used_max_ * 4 / 1024), (unsigned)(kDeferBytes / 1024), held_presented_, held_flushed_);
+                                 (unsigned)(dbuf_used_max_ * 4 / 1024), (unsigned)(dbuf_bytes_ / 1024), held_presented_, held_flushed_);
                     }
                     fprintf(stderr, "rt64-3ds:   pairs' gpu waits on the gfx thread: in-between %.1f ms, game frame %.1f ms (%u pairs); double eyes %s\n",
                             (float)acc_pair_wait_[1] * pp, (float)acc_pair_wait_[0] * pp, pair_frames_, dbl);
@@ -1329,7 +1344,7 @@ private:
             gfxSetWide(false);
             gfxSet3D(false);
         }
-        if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 2)) {
+        if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4) && !C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 2)) {
             aptUnhook(&g_apt_post_cookie);
             g_gpu_lock_ready = false;
             fprintf(stderr, "rt64-3ds: C3D_Init failed\n");
@@ -1429,6 +1444,13 @@ private:
             C3D_TexSetFilter(&reticle_tex_, GPU_LINEAR, GPU_LINEAR);
             C3D_TexSetWrap(&reticle_tex_, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
         }
+        loading_tex_ok_ = C3D_TexInit(&loading_tex_, 128, 32, GPU_RGBA8);
+        if (loading_tex_ok_) {
+            memset(loading_tex_.data, 0, 128 * 32 * 4);
+            flush_dcache(loading_tex_.data, 128 * 32 * 4);
+            C3D_TexSetFilter(&loading_tex_, GPU_NEAREST, GPU_NEAREST);
+        }
+        loading_vbo_ = (GpuVertex*)linearAlloc(6 * sizeof(GpuVertex));
         fprintf(stderr, "rt64-3ds: eye targets: %s colour, %s depth (VRAM left %u KB)\n", color16_ ? "RGB565" : "RGBA8",
                 depth16_ ? "16-bit" : "24-bit + stencil", (unsigned)(vramSpaceFree() / 1024));
         // The game frame's depth, copied by the GPU after its left eye's draws
@@ -1845,13 +1867,16 @@ private:
         bool eye_replay = eyes == 2 && !split && !(debug_frame && debug_sync_) && !post && !vignette && !reticle_on;
         bool has_rtt_draws = false;
         for (const rt64_3ds::DrawRecord& d : frame_.draws) if (d.rtt >= 0) { has_rtt_draws = true; break; }
-        if (has_rtt_draws) eye_replay = false;
+        if (has_rtt_draws || frame_.draws.size() > 2500) eye_replay = false;
         u32* left_list = nullptr;
         u32 left_words = 0;
         if (eyes == 2) eye_frames_++;
         for (int pass = 0; pass < eyes; pass++) {
         const int eye = pass == 0 ? 1 : -1;       // +1 left, -1 right
         if (pass == 1) {
+            if (!deferring_ && !eye_replay && gpuCmdBuf != nullptr && gpuCmdBufOffset + kCmdBufGuardWords > gpuCmdBufSize) {
+                flush_cmdbuf_midframe(0, 1, vb, false);
+            }
             // The right eye: same records, same state, the other shift.
             tl_split = svcGetSystemTick();
             if (has_rtt_draws && !split) {
@@ -1893,6 +1918,19 @@ private:
             const rt64_3ds::DrawRecord& d = frame_.draws[i];
             g_progress.draw_index = (uint32_t)i;
             g_progress_draw = &d;
+            if (gpuCmdBuf != nullptr && gpuCmdBufOffset + kCmdBufGuardWords > gpuCmdBufSize) {
+                if (!deferring_ && !eye_replay) {
+                    flush_cmdbuf_midframe(pass, eye, vb, false);
+                } else {
+                    if (!cmdbuf_cap_logged_) {
+                        cmdbuf_cap_logged_ = true;
+                        fprintf(stderr, "rt64-3ds: cmdbuf full during %s at frame %u draw %zu/%zu (off %lu/%lu), skipping tail\n",
+                                deferring_ ? "deferred record" : "eye_replay", frames_, i, frame_.draws.size(),
+                                (unsigned long)gpuCmdBufOffset, (unsigned long)gpuCmdBufSize);
+                    }
+                    return;
+                }
+            }
             if (tgt != cur_target_) {
                 if (!bind_target(tgt, pass)) return;
                 // A target that is also a texture was drawn into: bind
@@ -2031,6 +2069,9 @@ private:
         }
         // The left eye's draws, a command list kept for the right eye.
         if (eye_replay && pass == 0) close_segment(&left_list, &left_words);
+        if (!deferring_ && !eye_replay && gpuCmdBuf != nullptr && gpuCmdBufOffset + kCmdBufGuardWords > gpuCmdBufSize) {
+            flush_cmdbuf_midframe(pass, eye, vb, !offscreen_frame);
+        }
         // A game frame's depth, copied once its left eye's draws are queued
         // (the next game frame reads it).
         if (pass == 0 && !inbetween) {
@@ -2060,7 +2101,12 @@ private:
             if (tl_split != 0) { acc_left_ += tl_split - tl0; acc_right_ += tl1 - tl_split; }
             else acc_left_ += tl1 - tl0;
         }
-        if (!inbetween && !offscreen_frame) bottom_pass(vb, n);
+        if (!inbetween && !offscreen_frame) {
+            if (!deferring_ && gpuCmdBuf != nullptr && gpuCmdBufOffset + kCmdBufGuardWords > gpuCmdBufSize) {
+                flush_cmdbuf_midframe(0, 1, vb, false);
+            }
+            bottom_pass(vb, n);
+        }
         if (vi_blanked_ && black_ != nullptr && !offscreen_frame) {
             // The frame is drawn (the game may store it for an effect) but
             // the screen gets the black target, as the VI would show.
@@ -2073,6 +2119,10 @@ private:
         g_stats.tris = (int)(frame_.verts.size() / 3);
         presented_++;
         if (!offscreen_frame) { last_eye_[0] = cur_eye_[0]; last_eye_[1] = cur_eye_[1]; }
+        if (!inbetween && !offscreen_frame) {
+            loading_.on_frame_submitted(now_ms64(), recomp3ds::screen_conker_level_switching());
+            loading_drawn_dots_ = 0;
+        }
         if (record_only_) {
             // The in-betweens are drawn next; hand_off_recorded() does this
             // frame's bookkeeping and hands it over after them.
@@ -3365,9 +3415,13 @@ private:
                 plan = &plan_cache_[slot];
             }
             plan_fallbacks_ = plan->fallbacks;
-            if (plan->stages != last_plan_.stages || plan->buffer_color != last_plan_.buffer_color ||
-                memcmp(plan->stage, last_plan_.stage, sizeof(rt64_3ds::TevStage) * plan->stages) != 0) {
-                rt64_3ds::apply_tev(*plan);
+            bool plan_diff = (plan->stages != last_plan_.stages || plan->buffer_color != last_plan_.buffer_color ||
+                              plan->buf_update_rgb != last_plan_.buf_update_rgb || plan->buf_update_a != last_plan_.buf_update_a);
+            for (int i = 0; !plan_diff && i < plan->stages; i++) {
+                if (!(plan->stage[i] == last_plan_.stage[i])) plan_diff = true;
+            }
+            if (plan_diff) {
+                rt64_3ds::apply_tev(*plan, last_plan_.stages >= 0 ? &last_plan_ : nullptr);
                 last_plan_ = *plan;
             }
             last_cc_[0] = d.cc_w0; last_cc_[1] = d.cc_w1; last_omh_ = d.othermode_h; last_oml_ = d.othermode_l;
@@ -4514,7 +4568,8 @@ public:
     C3D_RenderTarget* last_eye_[2] = {};        // ... and the last frame drawn's (captures, screenshots and copies read them)
     int linked_set_ = 0;                        // what citro3d transfers to the screen: 0 top_/top_r_, 1 the in-betweens', -1 black_
     bool pair_ = false;                         // send_dl: replaying an interpolated pair
-    static constexpr u32 kDeferBytes = C3D_DEFAULT_CMDBUF_SIZE * 2;   // as citro3d's own (C3D_Init above)
+    static constexpr u32 kDeferBytesMax = C3D_DEFAULT_CMDBUF_SIZE * 4;
+    static constexpr u32 kCmdBufGuardWords = 4096;
     struct DeferredOp {                         // in GX queue order: a command list, a clear (fill), or a copy
         u32* list;
         u32 words;
@@ -4529,10 +4584,13 @@ public:
     };
     static constexpr int kMaxDeferredOps = 30;  // citro3d's GX queue takes 32 a frame
     u32* dbuf_ = nullptr;                       // the game frame's command buffer (linear)
+    u32 dbuf_bytes_ = 0;
     DeferredOp dops_[kMaxDeferredOps] = {};
     int dop_count_ = 0;
     bool deferring_ = false, dops_overflow_ = false;
     u32 dbuf_used_max_ = 0;                     // words, this report
+    uint32_t midframe_flushes_ = 0;
+    bool cmdbuf_cap_logged_ = false;
     // The presenter's job: set before present_go_, read back after present_done_.
     bool job_deferred_ = false, job_stereo_ = false;
     bool job_inb_ = false, job_inb_stereo_ = false;   // the presenter transfers a drawn in-between first
@@ -4562,19 +4620,29 @@ public:
         const u32 need = (top_r_ != nullptr ? 2 : 1) * (C3D_CalcColorBufSize(240, top_h_, color) + C3D_CalcDepthBufSize(240, top_h_, depth));
         const char* why = nullptr;
         if (presenter_ == nullptr) why = "no presenter thread";
-        else if ((dbuf_ = (u32*)linearAlloc(kDeferBytes)) == nullptr) why = "no linear memory for the command buffer";
         else {
-            inb_l_ = C3D_RenderTargetCreate(240, top_h_, color, depth);
-            if (inb_l_ != nullptr && top_r_ != nullptr) inb_r_ = C3D_RenderTargetCreate(240, 400, color, depth);
-            if (inb_l_ == nullptr || (top_r_ != nullptr && inb_r_ == nullptr)) {
-                if (inb_l_ != nullptr) C3D_RenderTargetDelete(inb_l_);
-                inb_l_ = nullptr;
-                why = "no VRAM for the in-betweens' eye targets";
+            dbuf_ = (u32*)linearAlloc(kDeferBytesMax);
+            if (dbuf_ != nullptr) {
+                dbuf_bytes_ = kDeferBytesMax;
+            } else {
+                dbuf_ = (u32*)linearAlloc(C3D_DEFAULT_CMDBUF_SIZE * 2);
+                if (dbuf_ != nullptr) dbuf_bytes_ = C3D_DEFAULT_CMDBUF_SIZE * 2;
+            }
+            if (dbuf_ == nullptr) why = "no linear memory for the command buffer";
+            else {
+                inb_l_ = C3D_RenderTargetCreate(240, top_h_, color, depth);
+                if (inb_l_ != nullptr && top_r_ != nullptr) inb_r_ = C3D_RenderTargetCreate(240, 400, color, depth);
+                if (inb_l_ == nullptr || (top_r_ != nullptr && inb_r_ == nullptr)) {
+                    if (inb_l_ != nullptr) C3D_RenderTargetDelete(inb_l_);
+                    inb_l_ = nullptr;
+                    why = "no VRAM for the in-betweens' eye targets";
+                }
             }
         }
         if (why != nullptr) {
             if (dbuf_ != nullptr) linearFree(dbuf_);
             dbuf_ = nullptr;
+            dbuf_bytes_ = 0;
             fprintf(stderr, "rt64-3ds: double eyes OFF: %s (VRAM free %u KB, %u KB needed)\n", why, (unsigned)(free0 / 1024), (unsigned)(need / 1024));
             return;
         }
@@ -4582,7 +4650,7 @@ public:
         LightEvent_Init(&inb_free_, RESET_STICKY);
         LightEvent_Signal(&inb_free_);
         fprintf(stderr, "rt64-3ds: double eyes on: in-between eye targets %u KB (VRAM free %u -> %u KB), game-frame command buffer %u KB (linear free %u KB)\n",
-                (unsigned)(need / 1024), (unsigned)(free0 / 1024), (unsigned)(vramSpaceFree() / 1024), (unsigned)(kDeferBytes / 1024),
+                (unsigned)(need / 1024), (unsigned)(free0 / 1024), (unsigned)(vramSpaceFree() / 1024), (unsigned)(dbuf_bytes_ / 1024),
                 (unsigned)(linearSpaceFree() / 1024));
         start_builder();
     }
@@ -4603,7 +4671,7 @@ public:
     // present_deferred.
     void begin_deferred() {
         dop_count_ = 0;
-        GPUCMD_SetBuffer(dbuf_, kDeferBytes / 4, 0);
+        GPUCMD_SetBuffer(dbuf_, dbuf_bytes_ / 4, 0);
         deferring_ = true;
     }
     void end_deferred() {
@@ -4642,6 +4710,41 @@ public:
     void frame_split() {
         if (!deferring_) C3D_FrameSplit(GX_CMDLIST_FLUSH);   // frame ends flush only their own list
         else defer_split();
+    }
+    void flush_cmdbuf_midframe(int pass, int eye, GpuVertex* vb, bool rebind_target) {
+        if (deferring_) return;
+        C3D_RenderTarget* const screen_targets[5] = { top_, top_r_, inb_l_, inb_r_, black_ };
+        bool saved_used[5]{};
+        for (int idx = 0; idx < 5; idx++) {
+            if (screen_targets[idx] != nullptr) {
+                saved_used[idx] = screen_targets[idx]->used;
+                screen_targets[idx]->used = false;
+            }
+        }
+        C3D_FrameEnd(GX_CMDLIST_FLUSH);
+        { Waiting gw(g_wait_gpu, "C3D_FrameBegin, cmdbuf flush"); C3D_FrameBegin(0); }
+        gpu_pending_extra_ms_ += C3D_GetDrawingTime();
+        for (int idx = 0; idx < 5; idx++) {
+            if (screen_targets[idx] != nullptr) screen_targets[idx]->used = saved_used[idx];
+        }
+        if (g_attr_dirty) {
+            g_attr_dirty = false;
+            C3D_SetAttrInfo(C3D_GetAttrInfo());
+        }
+        C3D_BindProgram(&prog_);
+        C3D_BufInfo* bi = C3D_GetBufInfo();
+        BufInfo_Init(bi);
+        BufInfo_Add(bi, vb, sizeof(GpuVertex), 3, 0x210);
+        C3D_TexBind(2, &white_);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_eye_, (float)eye, 0.0f, 0.0f, 0.0f);
+        forget_draw_state();
+        const int prev_tgt = cur_target_;
+        cur_target_ = -4;
+        if (rebind_target && prev_tgt != -2) bind_target(prev_tgt, pass);
+        if (++midframe_flushes_ <= 16) {
+            fprintf(stderr, "rt64-3ds: mid-frame cmdbuf flush #%u at frame %u draw %u/%u (pass %d)\n",
+                    midframe_flushes_, frames_, g_progress.draw_index, g_progress.draw_count, pass);
+        }
     }
     // The commands since the last split, as a command list of their own on
     // the GX queue (or the deferred frame's ops); keep_*: where it is, to
@@ -4686,8 +4789,14 @@ public:
     C3D_Tex save_tex_[4]{};
     int save_slot_=0;
     bool save_tex_ok_=false;
-    C3D_Tex toast_tex_{};           // top-screen bottom-right notification toast, 256x64 RGBA4
+    C3D_Tex toast_tex_{};           // top-screen bottom-right notification toast, 256x64 RGBA8
     bool toast_tex_ok_ = false;
+    C3D_Tex loading_tex_{};         // top-screen bottom-right level-loading pill, 128x32 RGBA8
+    bool loading_tex_ok_ = false;
+    GpuVertex* loading_vbo_ = nullptr;
+    rt64_3ds::LoadingIndicator loading_{};
+    int loading_drawn_dots_ = 0;
+    int loading_w_ = 92, loading_h_ = 22;
     C3D_Tex reticle_tex_{};         // top-screen anti-aliased SDF reticle, 64x64 RGBA8
     bool reticle_tex_ok_ = false;
     uint32_t reticle_key_ = 0;
@@ -4913,6 +5022,46 @@ public:
         }
         flush_dcache(dst,64*64*4);
     }
+    static void put_morton_rgba8(uint32_t* dst, int tex_w, int tex_h, int x, int y, uint32_t c) {
+        if ((unsigned)x >= (unsigned)tex_w || (unsigned)y >= (unsigned)tex_h) return;
+        const int yd = (tex_h - 1) - y;
+        const unsigned mx = (x & 1) | ((x & 2) << 1) | ((x & 4) << 2);
+        const unsigned my = ((yd & 1) << 1) | ((yd & 2) << 2) | ((yd & 4) << 3);
+        dst[((yd >> 3) * (tex_w / 8) + (x >> 3)) * 64 + (my | mx)] = c;
+    }
+    void setup_rgba8_overlay_state(GpuVertex* q, float l, float t, float r, float b,
+                                   int image_w, int image_h, C3D_Tex* tex,
+                                   float tex_w, float tex_h, bool alpha_test) {
+        const float xs[6] = { l, r, r, l, r, l }, ys[6] = { t, t, b, t, b, b };
+        const float us[6] = { 0.0f, (float)image_w, (float)image_w, 0.0f, (float)image_w, 0.0f };
+        const float vs[6] = { 0.0f, 0.0f, (float)image_h, 0.0f, (float)image_h, (float)image_h };
+        for (int i = 0; i < 6; i++) q[i] = GpuVertex{ xs[i], ys[i], 0.0f, 1.0f, us[i], vs[i], 255, 255, 255, 255 };
+        flush_dcache(q, 6 * sizeof(GpuVertex));
+        C3D_Mtx ortho;
+        Mtx_OrthoTilt(&ortho, 0.0f, 400.0f, 240.0f, 0.0f, 0.0f, 1.0f, true);
+        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, u_xform_, &ortho);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_stereo_, 0.0f, 0.0f, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_eye_, 1.0f, 0.0f, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uvscale_, 1.0f / tex_w, 1.0f / tex_h, 0.0f, 0.0f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uv1_, 1.0f / tex_w, 1.0f / tex_h, 0.0f, 0.0f);
+        for (int i = 0; i < 6; i++) {
+            C3D_TexEnv* env = C3D_GetTexEnv(i);
+            C3D_TexEnvInit(env);
+            if (i == 0) C3D_TexEnvSrc(env, C3D_Both, GPU_TEXTURE0, GPU_TEXTURE0, GPU_TEXTURE0);
+            else C3D_TexEnvSrc(env, C3D_Both, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
+            C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+        }
+        C3D_TexEnvBufUpdate(C3D_RGB, 0);
+        C3D_TexEnvBufUpdate(C3D_Alpha, 0);
+        C3D_TexBind(0, tex);
+        C3D_TexBind(1, &white_);
+        C3D_TexBind(2, &white_);
+        set_cull(GPU_CULL_NONE);
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+        C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+        C3D_AlphaTest(alpha_test, alpha_test ? GPU_GREATER : GPU_ALWAYS, 0);
+        C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+    }
     void draw_toast(C3D_RenderTarget* target, GpuVertex* q, uint32_t first, uint32_t seq, const std::string& text,
                     const std::vector<uint32_t>& rgba8, int tw, int th, bool save_icon=false) {
         if (target == nullptr) return;
@@ -4924,46 +5073,121 @@ public:
         draw_on(target);
         cur_target_ = kFrameTarget;
         frame_viewport_ = false;
-        set_cull(GPU_CULL_NONE);
-        const float total_w = (float)geo_.w + 2.0f * geo_.x0;
-        const float sx = save_icon?1.0f:total_w/400.0f;
-        const float sy = save_icon?1.0f:(float)geo_.h/240.0f;
-        const int image_w=save_icon?tw:toast_w_,image_h=save_icon?th:toast_h_;
-        const float scale=save_icon?32.0f/std::max(1,image_h):1.0f;
-        const float l=save_icon?10.0f:((float)geo_.w+geo_.x0)-6.0f*sx-image_w*sx;
-        const float r=l+image_w*sx*scale;
-        const float b=save_icon?228.0f:(float)geo_.h-6.0f*sy;
-        const float t=b-image_h*sy*scale;
-        const float xs[6] = { l, r, r, l, r, l }, ys[6] = { t, t, b, t, b, b };
-        const float us[6] = { 0.0f, (float)image_w, (float)image_w, 0.0f, (float)image_w, 0.0f };
-        const float vs[6] = { 0.0f, 0.0f, (float)image_h, 0.0f, (float)image_h, (float)image_h };
-        for (int i = 0; i < 6; i++) q[i] = GpuVertex{ xs[i], ys[i], 0.0f, 1.0f, us[i], vs[i], 255, 255, 255, 255 };
-        flush_dcache(q, 6 * sizeof(GpuVertex));
-        if(save_icon){
-            C3D_Mtx icon_projection;
-            Mtx_OrthoTilt(&icon_projection,0,400,240,0,0,1,true);
-            C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,u_xform_,&icon_projection);
-        } else C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,u_xform_,&proj_);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_stereo_, 0.0f, 0.0f, 0.0f, 0.0f);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_eye_, 1.0f, 0.0f, 0.0f, 0.0f);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uvscale_, 1.0f / (save_icon?64.0f:256.0f), 1.0f / 64.0f, 0.0f, 0.0f);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER, u_uv1_, 1.0f / (save_icon?64.0f:256.0f), 1.0f / 64.0f, 0.0f, 0.0f);
-        for (int i = 0; i < 6; i++) {
-            C3D_TexEnv* env = C3D_GetTexEnv(i);
-            C3D_TexEnvInit(env);
-            if (i == 0) C3D_TexEnvSrc(env, C3D_Both, GPU_TEXTURE0, GPU_TEXTURE0, GPU_TEXTURE0);
-            else C3D_TexEnvSrc(env, C3D_Both, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
-            C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
-        }
-        C3D_TexBind(0, save_icon?&save_tex_[save_slot_]:&toast_tex_);
-        C3D_TexBind(1, &white_);
-        C3D_TexBind(2, &white_);
-        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
-        C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
-        C3D_AlphaTest(false, GPU_ALWAYS, 0);
-        C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+        const int image_w = save_icon ? tw : toast_w_;
+        const int image_h = save_icon ? th : toast_h_;
+        const float scale = save_icon ? 32.0f / std::max(1, image_h) : 1.0f;
+        const float r = save_icon ? (10.0f + image_w * scale) : (400.0f - 6.0f);
+        const float l = save_icon ? 10.0f : (r - (float)image_w);
+        const float b = save_icon ? 228.0f : (240.0f - 6.0f);
+        const float t = b - (float)image_h * scale;
+        setup_rgba8_overlay_state(q, l, t, r, b, image_w, image_h,
+                                  save_icon ? &save_tex_[save_slot_] : &toast_tex_,
+                                  save_icon ? 64.0f : 256.0f, 64.0f, false);
         C3D_DrawArrays(GPU_TRIANGLES, first, 6);
         forget_draw_state();
+    }
+    void update_loading_tex(int dots) {
+        if (!loading_tex_ok_) return;
+        constexpr int kTexW = 128, kTexH = 32;
+        uint32_t* dst = (uint32_t*)loading_tex_.data;
+        memset(dst, 0, kTexW * kTexH * 4);
+        uint32_t rgba_buf[kTexW * kTexH];
+        int w = 0, h = 0;
+        if (recomp3ds::screen_conker_render_loading(dots, rgba_buf, w, h) &&
+            w > 0 && h > 0 && w <= kTexW && h <= kTexH) {
+            loading_w_ = w;
+            loading_h_ = h;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    put_morton_rgba8(dst, kTexW, kTexH, x, y, rgba_buf[y * w + x]);
+                }
+            }
+        } else {
+            constexpr int kW = 76, kH = 18;
+            loading_w_ = kW;
+            loading_h_ = kH;
+            for (int y = 0; y < kH; y++) {
+                for (int x = 0; x < kW; x++) {
+                    const int cx = x < 2 ? 2 - x : (x >= kW - 2 ? x - (kW - 3) : 0);
+                    const int cy = y < 2 ? 2 - y : (y >= kH - 2 ? y - (kH - 3) : 0);
+                    if (cx + cy > 2) continue;
+                    const int d = std::min({x, y, kW - 1 - x, kH - 1 - y});
+                    put_morton_rgba8(dst, kTexW, kTexH, x, y, (d == 0 || cx + cy == 2) ? 0x403626FFu : 0x0A0806FFu);
+                }
+            }
+            const char* label = (dots == 1) ? "Loading." : (dots == 2 ? "Loading.." : "Loading...");
+            int cx = 9;
+            for (const char* s = label; *s && cx + 5 <= kW - 4; ++s, cx += 6) {
+                uint8_t g[5];
+                toast_glyph(*s, g);
+                for (int col_i = 0; col_i < 5; col_i++) {
+                    for (int row_i = 0; row_i < 7; row_i++) {
+                        if (g[col_i] & (1u << row_i)) {
+                            put_morton_rgba8(dst, kTexW, kTexH, cx + col_i, 5 + row_i, 0xFFFCF0FFu);
+                        }
+                    }
+                }
+            }
+        }
+        flush_dcache(dst, kTexW * kTexH * 4);
+    }
+    void maybe_draw_loading() {
+        if (!ok_ || !loading_tex_ok_ || loading_vbo_ == nullptr || g_quitting || g_paused || gpu_away()) return;
+        const int dots = loading_.poll(now_ms64(), recomp3ds::screen_conker_loading_indicator_enabled(),
+                                       recomp3ds::screen_conker_level_switching());
+        if (dots <= 0) { loading_drawn_dots_ = 0; return; }
+        if (dots == loading_drawn_dots_) return;
+        if (gspIsPresentPending(GSP_SCREEN_TOP)) return;
+        await_presenter();
+        LightLock_Lock(&g_gpu_lock);
+        if (gpu_away() || g_quitting || g_paused) {
+            LightLock_Unlock(&g_gpu_lock);
+            return;
+        }
+        if (inb_pending_) flush_pending_inbetween();
+        update_loading_tex(dots);
+        { Waiting gw(g_wait_gpu, "C3D_FrameBegin, loading indicator"); C3D_FrameBegin(0); }
+        if (gpu_pending_kind_ >= 0) {
+            account_gpu(gpu_pending_kind_, gpu_pending_eyes_, gpu_pending_fill_, C3D_GetDrawingTime() + gpu_pending_extra_ms_);
+            gpu_pending_kind_ = -1;
+            gpu_pending_extra_ms_ = 0.0f;
+        }
+        if (g_attr_dirty) {
+            g_attr_dirty = false;
+            C3D_SetAttrInfo(C3D_GetAttrInfo());
+        }
+        C3D_RenderTarget* targets[2] = {};
+        int tcount = 0;
+        if (vi_blanked_ && black_ != nullptr) {
+            targets[tcount++] = black_;
+        } else {
+            C3D_RenderTarget* eye0 = last_eye_[0] != nullptr ? last_eye_[0] : top_;
+            if (eye0 != nullptr) {
+                link_eyes(eye0 == inb_l_ ? 1 : 0);
+                targets[tcount++] = eye0;
+                if (s3d_on_ && last_eye_[1] != nullptr) targets[tcount++] = last_eye_[1];
+            }
+        }
+        if (tcount > 0) {
+            C3D_BindProgram(&prog_);
+            C3D_BufInfo* bi = C3D_GetBufInfo();
+            BufInfo_Init(bi);
+            BufInfo_Add(bi, loading_vbo_, sizeof(GpuVertex), 3, 0x210);
+            const float r = 400.0f - 8.0f, l = r - (float)loading_w_;
+            const float b = 240.0f - 8.0f, t = b - (float)loading_h_;
+            setup_rgba8_overlay_state(loading_vbo_, l, t, r, b, loading_w_, loading_h_,
+                                      &loading_tex_, 128.0f, 32.0f, true);
+            for (int i = 0; i < tcount; i++) {
+                draw_on(targets[i]);
+                C3D_DrawArrays(GPU_TRIANGLES, 0, 6);
+            }
+            forget_draw_state();
+            cur_target_ = kFrameTarget;
+            frame_viewport_ = false;
+        }
+        C3D_FrameEnd(GX_CMDLIST_FLUSH);
+        loading_drawn_dots_ = dots;
+        LightLock_Unlock(&g_gpu_lock);
     }
     static uint64_t reticle_snapshot() {
         return g_reticle_state.load(std::memory_order_relaxed);

@@ -658,8 +658,8 @@ void compose_conker_panel(uint8_t* dest) {
     if(ach_toast){
         const AchTier tier=conker_ach_tier(notice+22);
         const AchStyle& st=conker_ach_style(tier);
-        const uint16_t hdr=theme_rgb(st.tx_r,st.tx_g,st.tx_b);
-        game_rect(dest,20,202,280,32,26,22,16,210);
+        const uint16_t hdr=tier==AchTier::Bronze?theme_rgb(248,178,114):theme_rgb(st.tx_r,st.tx_g,st.tx_b);
+        game_rect(dest,20,202,280,32,18,15,11,232);
         game_box(dest,20,202,280,32,st.hi_r,st.hi_g,st.hi_b,235);
         game_ach_icon(dest,26,210,true,tier);
         game_text(dest,"ACHIEVEMENT UNLOCKED",46,205,244,hdr);
@@ -667,22 +667,97 @@ void compose_conker_panel(uint8_t* dest) {
     }
     for(int row=22;row<30;++row){if(row==27 && (ach_toast || !g_conker_gfx_text || svcGetSystemTick()>g_conker_notice_until))continue;game_line(line,row);if(line[0])game_text(dest,line,4,row*8-1,312,g_game_inks[row][0]==2?red:white);}
 }
+inline int conker_rgba_text_width(const char* s,int space_w,int tracking) {
+    if(!s)return 0;
+    int w=0;
+    for(const unsigned char* p=(const unsigned char*)s;*p;++p){
+        if(*p==' '){w+=space_w;continue;}
+        const int k=game_glyph(*p);
+        if(k>=0){
+            w+=g_game_glyphs[k].w+g_game_glyphs[k].dx;
+            if(p[1] && p[1]!=' ')w+=tracking;
+        }
+    }
+    return w;
+}
+inline int conker_sample_glyph_alpha(const ConkerGlyph& glyph,int xx,int yy,int dw,int dh) {
+    if(dw==glyph.w && dh==glyph.h){
+        const int raw=glyph.pixels[yy*glyph.w+xx];
+        return raw|(raw>>4);
+    }
+    const int sx0=(xx*glyph.w)/dw;
+    const int sx1=std::min(glyph.w,std::max(sx0+1,((xx+1)*glyph.w+dw-1)/dw));
+    const int sy0=(yy*glyph.h)/dh;
+    const int sy1=std::min(glyph.h,std::max(sy0+1,((yy+1)*glyph.h+dh-1)/dh));
+    int sum=0,count=0;
+    for(int sy=sy0;sy<sy1;++sy){
+        for(int sx=sx0;sx<sx1;++sx){
+            const int raw=glyph.pixels[sy*glyph.w+sx];
+            sum+=raw|(raw>>4);
+            ++count;
+        }
+    }
+    return count?(sum/count):0;
+}
+inline void draw_conker_rgba_text(uint8_t* buf,int W,int H,const char* s,int x0,int y0,int maxw,
+                                  int r,int g,int b,int space_w=5,int tracking=1) {
+    const int width=conker_rgba_text_width(s,space_w,tracking);
+    if(width<=0)return;
+    const float scale=(width>maxw)?((float)maxw/(float)width):1.0f;
+    auto blend_px=[&](int x,int y,int cr,int cg,int cb,int a){
+        if((unsigned)x>=(unsigned)W || (unsigned)y>=(unsigned)H || a<=0)return;
+        uint8_t* p=buf+(y*W+x)*4;
+        p[0]=(uint8_t)((cr*a+p[0]*(255-a))/255);
+        p[1]=(uint8_t)((cg*a+p[1]*(255-a))/255);
+        p[2]=(uint8_t)((cb*a+p[2]*(255-a))/255);
+        p[3]=(uint8_t)std::max((int)p[3],a);
+    };
+    for(int pass=0;pass<2;++pass){
+        float cursor=(float)x0;
+        for(const unsigned char* p=(const unsigned char*)s;*p;++p){
+            if(*p==' '){cursor+=space_w*scale;continue;}
+            const int k=game_glyph(*p);if(k<0)continue;
+            const auto& glyph=g_game_glyphs[k];
+            if(glyph.w>0 && glyph.h>0){
+                const int dw=(scale==1.0f)?glyph.w:std::max(1,(int)(glyph.w*scale));
+                const int dh=(scale==1.0f)?glyph.h:std::max(1,(int)(glyph.h*scale));
+                const int gx=(int)(cursor+glyph.dx*scale);
+                const int gy=y0+(int)(glyph.dy*scale);
+                for(int yy=0;yy<dh;++yy)for(int xx=0;xx<dw;++xx){
+                    const int a=conker_sample_glyph_alpha(glyph,xx,yy,dw,dh);
+                    if(a<=0)continue;
+                    const int px=gx+xx,py=gy+yy;
+                    if(pass==0){
+                        const int out_a=(a*160)/255;
+                        blend_px(px-1,py,0,0,0,out_a);
+                        blend_px(px+1,py,0,0,0,out_a);
+                        blend_px(px,py-1,0,0,0,out_a);
+                        blend_px(px,py+1,0,0,0,out_a);
+                        blend_px(px+1,py+1,0,0,0,a);
+                    }else{
+                        blend_px(px,py,r,g,b,a);
+                    }
+                }
+            }
+            const int adv=glyph.w+glyph.dx+((p[1] && p[1]!=' ')?tracking:0);
+            cursor+=adv*scale;
+        }
+    }
+}
+inline void pack_conker_rgba8(const uint8_t* buf,int count,uint32_t* out) {
+    for(int i=0;i<count;++i){
+        const uint8_t* p=buf+i*4;
+        out[i]=((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|(uint32_t)p[3];
+    }
+}
 bool render_conker_toast_rgba8(const char* text,uint32_t* out,int& out_w,int& out_h) {
-    if(!g_game_font_ready || !text || !*text)return false;
-    constexpr int W=184,H=34;
+    if(!g_game_font_ready || !text || !*text || !out)return false;
+    constexpr int W=212,H=40;
     out_w=W;out_h=H;
     uint8_t buf[W*H*4]{};
     auto set_px=[&](int x,int y,int r,int g,int b,int a){
         if((unsigned)x>=(unsigned)W || (unsigned)y>=(unsigned)H)return;
         uint8_t* p=buf+(y*W+x)*4;p[0]=(uint8_t)r;p[1]=(uint8_t)g;p[2]=(uint8_t)b;p[3]=(uint8_t)a;
-    };
-    auto blend_px=[&](int x,int y,int r,int g,int b,int a){
-        if((unsigned)x>=(unsigned)W || (unsigned)y>=(unsigned)H || a<=0)return;
-        uint8_t* p=buf+(y*W+x)*4;
-        p[0]=(uint8_t)((r*a+p[0]*(255-a))/255);
-        p[1]=(uint8_t)((g*a+p[1]*(255-a))/255);
-        p[2]=(uint8_t)((b*a+p[2]*(255-a))/255);
-        p[3]=(uint8_t)std::max((int)p[3],a);
     };
     const bool is_ach=!strncmp(text,"Achievement unlocked: ",22);
     const AchTier tier=is_ach?conker_ach_tier(text+22):AchTier::Gold;
@@ -713,66 +788,72 @@ bool render_conker_toast_rgba8(const char* text,uint32_t* out,int& out_w,int& ou
             const int cy=y<3?3-y:(y>=H-3?y-(H-4):0);
             if(cx+cy>4)continue;
             const int d=std::min({x,y,W-1-x,H-1-y});
-            if(d==0 || cx+cy==4){set_px(x,y,16,10,5,245);continue;}
+            if(d==0 || cx+cy==4){set_px(x,y,16,10,5,248);continue;}
             if(d<=2){
                 const bool hi=(x<W-3 && y<H-3 && (x<=2 || y<=2));
-                if(is_ach)set_px(x,y,hi?st.hi_r:st.lo_r,hi?st.hi_g:st.lo_g,hi?st.hi_b:st.lo_b,245);
-                else set_px(x,y,hi?190:115,hi?170:100,hi?140:80,240);
+                if(is_ach)set_px(x,y,hi?st.hi_r:st.lo_r,hi?st.hi_g:st.lo_g,hi?st.hi_b:st.lo_b,248);
+                else set_px(x,y,hi?190:115,hi?170:100,hi?140:80,245);
                 continue;
             }
-            if(d==3){set_px(x,y,24,14,6,238);continue;}
+            if(d==3){set_px(x,y,24,14,6,245);continue;}
             const float fx=std::min(1.0f,std::min(x-3,W-4-x)/22.0f);
             const float fy=std::min(1.0f,std::min(y-3,H-4-y)/10.0f);
             const float vig=0.55f+0.45f*(fx*fx*(3-2*fx))*(fy*fy*(3-2*fy));
-            int r=44,g=28,b=14;
+            int r=30,g=19,b=9;
             if(toast_pub_ready){
                 const int idx=((y&63)*32+(x&31))*3;
-                r=int(toast_pub[idx+0]*0.44f*vig);
-                g=int(toast_pub[idx+1]*0.44f*vig);
-                b=int(toast_pub[idx+2]*0.44f*vig);
+                r=int(toast_pub[idx+0]*0.30f*vig);
+                g=int(toast_pub[idx+1]*0.30f*vig);
+                b=int(toast_pub[idx+2]*0.30f*vig);
             }else{
-                r=int((46-(y/4))*vig);g=int((30-(y/5))*vig);b=int((15-(y/8))*vig);
+                r=int((34-(y/5))*vig);g=int((22-(y/6))*vig);b=int((11-(y/9))*vig);
             }
-            set_px(x,y,r,g,b,242);
+            set_px(x,y,r,g,b,248);
         }
     }
     if(is_ach){
         for(int ty=0;ty<16;++ty){
             for(int tx=0;tx<16;++tx){
                 const char c=kTrophy16[ty][tx];
-                if(c=='O')set_px(7+tx,9+ty,18,10,4,255);
-                else if(c=='W')set_px(7+tx,9+ty,st.wr,st.wg,st.wb,255);
-                else if(c=='Y')set_px(7+tx,9+ty,st.yr,st.yg,st.yb,255);
-                else if(c=='A')set_px(7+tx,9+ty,st.ar,st.ag,st.ab,255);
+                if(c=='O')set_px(8+tx,12+ty,18,10,4,255);
+                else if(c=='W')set_px(8+tx,12+ty,st.wr,st.wg,st.wb,255);
+                else if(c=='Y')set_px(8+tx,12+ty,st.yr,st.yg,st.yb,255);
+                else if(c=='A')set_px(8+tx,12+ty,st.ar,st.ag,st.ab,255);
             }
         }
-    }
-    auto draw_n64=[&](const char* s,int x0,int y0,int maxw,int r,int g,int b){
-        const int width=game_text_width(s);if(!width)return;
-        const float scale=std::min(0.85f,(float)maxw/width);
-        for(int pass=0;pass<2;++pass){
-            float cursor=(float)x0;
-            for(const unsigned char* p=(const unsigned char*)s;*p;++p){
-                int k=game_glyph(*p);if(*p==' '){cursor+=4*scale;continue;}if(k<0)continue;
-                const auto& glyph=g_game_glyphs[k];
-                const int dw=std::max(1,(int)(glyph.w*scale)),dh=std::max(1,(int)(glyph.h*scale));
-                for(int yy=0;yy<dh;++yy)for(int xx=0;xx<dw;++xx){
-                    const int a=glyph.pixels[(yy*glyph.h/dh)*glyph.w+xx*glyph.w/dw];
-                    blend_px(int(cursor+glyph.dx*scale)+xx+(pass==0),y0+int(glyph.dy*scale)+yy+(pass==0),pass?r:0,pass?g:0,pass?b:0,a);
-                }
-                cursor+=(glyph.w+glyph.dx)*scale;
-            }
-        }
-    };
-    if(is_ach){
-        draw_n64("ACHIEVEMENT UNLOCKED",27,5,150,st.tx_r,st.tx_g,st.tx_b);
-        draw_n64(text+22,27,18,150,255,250,232);
+        int hdr_r=255,hdr_g=226,hdr_b=86;
+        if(tier==AchTier::Bronze){hdr_r=248;hdr_g=178;hdr_b=114;}
+        else if(tier==AchTier::Silver){hdr_r=228;hdr_g=236;hdr_b=248;}
+        draw_conker_rgba_text(buf,W,H,"ACHIEVEMENT UNLOCKED",30,6,174,hdr_r,hdr_g,hdr_b,5,1);
+        draw_conker_rgba_text(buf,W,H,text+22,30,22,174,255,255,255,5,1);
     }else{
-        draw_n64(text,8,11,168,255,250,232);
+        draw_conker_rgba_text(buf,W,H,text,10,15,192,255,255,255,5,1);
     }
-    for(int i=0;i<W*H;++i){
-        const uint8_t* p=buf+i*4;
-        out[i]=((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|(uint32_t)p[3];
+    pack_conker_rgba8(buf,W*H,out);
+    return true;
+}
+bool render_conker_loading_rgba8(int dots,uint32_t* out,int& out_w,int& out_h) {
+    if(!g_game_font_ready || !out)return false;
+    dots=std::clamp(dots,1,3);
+    constexpr int W=92,H=22;
+    out_w=W;out_h=H;
+    uint8_t buf[W*H*4]{};
+    auto set_px=[&](int x,int y,int r,int g,int b,int a){
+        if((unsigned)x>=(unsigned)W || (unsigned)y>=(unsigned)H)return;
+        uint8_t* p=buf+(y*W+x)*4;p[0]=(uint8_t)r;p[1]=(uint8_t)g;p[2]=(uint8_t)b;p[3]=(uint8_t)a;
+    };
+    for(int y=0;y<H;++y){
+        for(int x=0;x<W;++x){
+            const int cx=x<2?2-x:(x>=W-2?x-(W-3):0);
+            const int cy=y<2?2-y:(y>=H-2?y-(H-3):0);
+            if(cx+cy>2)continue;
+            const int d=std::min({x,y,W-1-x,H-1-y});
+            if(d==0 || cx+cy==2)set_px(x,y,64,54,38,255);
+            else set_px(x,y,10,8,6,255);
+        }
     }
+    const char* label=(dots==1)?"Loading.":((dots==2)?"Loading..":"Loading...");
+    draw_conker_rgba_text(buf,W,H,label,9,6,W-18,255,252,240,5,1);
+    pack_conker_rgba8(buf,W*H,out);
     return true;
 }

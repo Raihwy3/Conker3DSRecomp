@@ -88,9 +88,15 @@ static int stage_progress(size_t n,size_t total){
     if(osGetTime()>=paint){draw("INSTALLING UPDATE","Checking the launcher files...","B: Cancel",(unsigned)n,(unsigned)total);paint=osGetTime()+100;}
     return 1;
 }
+// Only the installed title has our title ID; any .3dsx launcher (hbmenu or others) runs under another ID.
+static int running_as_cia(void){
+    u64 id=0;
+    if(R_SUCCEEDED(aptInit())){APT_GetProgramID(&id);aptExit();}
+    return id==CONKER_CIA_TITLE_ID;
+}
 int conker_update_startup(PrintConsole *top,PrintConsole *bottom){
     const char *directory="sdmc:/3ds/ConkerRecomp";
-    top_screen=top;bottom_screen=bottom;cia_mode=!envIsHomebrew();char error[160]={0},path[640];
+    top_screen=top;bottom_screen=bottom;cia_mode=running_as_cia();char error[160]={0},path[640];
     if(!native_update_recover(directory,error,sizeof error))return prompt("UPDATE RECOVERY",error,"A: Continue  B: Exit")>0;
     // A repository must be explicitly configured by the maintainer.
     if(!NATIVE_UPDATE_REPOSITORY[0])return 1;

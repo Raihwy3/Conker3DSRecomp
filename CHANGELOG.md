@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Fixed the broken intro (Conker standing still, respawning at the checkpoint) caused by "Cheat: Unlock chapters" overwriting the game's story progress. It now only enables the game's own chapter-unlock flag and never touches saves.
+- Fixed Invincible, Infinite lives and Max cash cheats writing to the wrong values; they now apply only during gameplay.
+- Fixed Conker's shaders turning brown underwater (brown slurry area).
+- Fixed a GPU command-buffer overflow crash.
+- Added a more readable achievement popup.
+- Added an optional animated "Loading..." indicator on the top screen while levels load.
+- Fixed New 3DS-only rendering mode failing on original 3DS hardware.
+
 ## 0.2.9-r4
 
 - Retain music-note release times when notes start, avoiding the invalid envelope read identified in the Frankie fight crash dump. The reported fight still needs console retesting.

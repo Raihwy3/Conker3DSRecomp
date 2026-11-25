@@ -34,6 +34,6 @@ int conker_section_for(const char* key,int page) {
     }
     if(!strcmp(key,"stick_deadzone"))return CSticks;
     if(!strncmp(key,"button_",7) || !strcmp(key,"reset_controls"))return CButtons;
-    if(!strcmp(key,"options_button") || !strcmp(key,"hud_on_bottom") || !strcmp(key,"achievement_popups"))return CAppearance;
+    if(!strcmp(key,"options_button") || !strcmp(key,"hud_on_bottom") || !strcmp(key,"achievement_popups") || !strcmp(key,"loading_indicator"))return CAppearance;
     return CDiagnostics;
 }
