@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Raihwy3. MIT.
 #pragma once
-#define CONKER_LAUNCHER_VERSION "0.2.9-r4"
+#define CONKER_LAUNCHER_VERSION "0.2.9-r5"
 #ifdef __cplusplus
 extern "C" {
 #endif
