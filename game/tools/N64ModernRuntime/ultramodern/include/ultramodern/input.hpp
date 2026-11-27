@@ -56,7 +56,17 @@ namespace ultramodern {
             get_connected_device_info_t* get_connected_device_info;
         };
 
+        struct Pad {
+            uint16_t button;
+            int8_t stick_x;
+            int8_t stick_y;
+            uint8_t err_no;
+        };
+
+        using read_data_callback_t = void(Pad* pads, int max_controllers);
+
         void set_callbacks(const callbacks_t& callbacks);
+        void set_read_data_callback(read_data_callback_t* callback);
     }
 }
 

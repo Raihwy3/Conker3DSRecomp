@@ -257,11 +257,13 @@ struct GameDesc {
     // HOME button that never answered), 85 is the owner's choice
     // (2026-10-28).
     int old3ds_core1_limit = 85;
+    bool keep_wireless = false;
 };
 
 // Brings up the console, registers the game and runs the runtime. Returns the
 // process exit code once the game has quit.
 int run(const GameDesc& desc);
+void input_set_connected_ports(int count);
 
 // Ask the runtime to shut the game down (from the HOME prompt or a script).
 void request_exit();

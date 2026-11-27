@@ -447,6 +447,9 @@ void set_first_person(bool on);
 bool first_person_scene();
 void set_first_person_head_cull(bool on);
 bool first_person_head_cull();
+using FocusRectQuery = bool (*)(const uint8_t* rdram, float out_rect[4]);
+void set_focus_rect_query(FocusRectQuery query);
+bool query_focus_rect(const uint8_t* rdram, float out_rect[4]);
 // RenderDesc::aim_texture_hashes matched (the default), or paused while a
 // texture of the list is drawn as something else (DK64's race arrows are
 // its minigame crosshair's frames).

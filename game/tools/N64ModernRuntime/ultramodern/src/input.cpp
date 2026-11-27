@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cassert>
 #include <cmath>
 
@@ -161,7 +162,20 @@ void convert_to_n64_range(float x, float y, int8_t& stick_x, int8_t& stick_y) {
     stick_y = (int8_t)(sinf(angle) * output_magnitude);
 }
 
+static std::atomic<ultramodern::input::read_data_callback_t*> read_data_callback = nullptr;
+
+void ultramodern::input::set_read_data_callback(read_data_callback_t* callback) {
+    read_data_callback.store(callback, std::memory_order_release);
+}
+
 extern "C" void osContGetReadData(OSContPad *data) {
+    ultramodern::input::read_data_callback_t* callback = read_data_callback.load(std::memory_order_acquire);
+    if (callback != nullptr) {
+        for (int controller = max_controllers; controller < MAXCONTROLLERS; controller++) {
+            data[controller] = {};
+            data[controller].err_no = CONT_NO_RESPONSE_ERROR;
+        }
+    }
     for (int controller = 0; controller < max_controllers; controller++) {
         uint16_t buttons = 0;
         float x = 0.0f;
@@ -179,6 +193,19 @@ extern "C" void osContGetReadData(OSContPad *data) {
             data[controller].err_no = 0;
         } else {
             data[controller].err_no =  CONT_NO_RESPONSE_ERROR; // CHNL_ERR_NORESP >> 4
+        }
+    }
+    if (callback != nullptr) {
+        ultramodern::input::Pad pads[MAXCONTROLLERS];
+        for (int controller = 0; controller < MAXCONTROLLERS; controller++) {
+            pads[controller] = { data[controller].button, data[controller].stick_x, data[controller].stick_y, data[controller].err_no };
+        }
+        callback(pads, max_controllers);
+        for (int controller = 0; controller < MAXCONTROLLERS; controller++) {
+            data[controller].button = pads[controller].button;
+            data[controller].stick_x = pads[controller].stick_x;
+            data[controller].stick_y = pads[controller].stick_y;
+            data[controller].err_no = pads[controller].err_no;
         }
     }
 }

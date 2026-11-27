@@ -113,6 +113,7 @@ AccessControlInfo:
     - hid:USER
     - ir:rst
     - ndm:u
+    - nwm::UDS
     - ptm:u
     - ptm:sysm
     - soc:U

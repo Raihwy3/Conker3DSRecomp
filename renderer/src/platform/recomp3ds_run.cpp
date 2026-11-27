@@ -1206,7 +1206,7 @@ int recomp3ds::run(const GameDesc& initial_desc) {
     log_memory("boot");
     if (!is_new_3ds) {
         old3ds_check_layout();
-        old3ds_quiet_start();
+        if (!desc.keep_wireless) old3ds_quiet_start();
         // Old 3DS memory & CPU profile: keep RGBA8 eyes (real 3DS hardware
         // hangs on RGB565 -> RGB8 display transfers and Conker uses frame
         // copies), disable frame interpolation to save ~3.7 MB of linear

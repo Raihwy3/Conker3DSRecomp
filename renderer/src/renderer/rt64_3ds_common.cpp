@@ -13,6 +13,7 @@ rt64_3ds::FrameStats g_stats{};
 volatile bool g_first_person = false;
 volatile bool g_first_person_head_cull = false;
 volatile bool g_aim_textures = true;
+std::atomic<rt64_3ds::FocusRectQuery> g_focus_rect_query{nullptr};
 std::atomic<u64> g_keep_frames_until{0};   // keep_frames' lease: its end, in system ticks
 char g_data_dir[160] = "sdmc:/3ds";
 }
@@ -35,6 +36,11 @@ void rt64_3ds::set_first_person(bool on) { g_first_person = on; }
 bool rt64_3ds::first_person_scene() { return g_first_person; }
 void rt64_3ds::set_first_person_head_cull(bool on) { g_first_person_head_cull = on; }
 bool rt64_3ds::first_person_head_cull() { return g_first_person_head_cull; }
+void rt64_3ds::set_focus_rect_query(FocusRectQuery query) { g_focus_rect_query.store(query, std::memory_order_release); }
+bool rt64_3ds::query_focus_rect(const uint8_t* rdram, float out_rect[4]) {
+    const FocusRectQuery q = g_focus_rect_query.load(std::memory_order_acquire);
+    return q != nullptr && q(rdram, out_rect);
+}
 void rt64_3ds::set_aim_textures(bool on) { g_aim_textures = on; }
 bool rt64_3ds::aim_textures_on() { return g_aim_textures; }
 void rt64_3ds::keep_frames(int ms) { g_keep_frames_until = svcGetSystemTick() + (u64)ms * (SYSCLOCK_ARM11 / 1000); }

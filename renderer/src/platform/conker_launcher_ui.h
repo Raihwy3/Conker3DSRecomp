@@ -42,6 +42,15 @@ void launcher_compose(uint8_t* out,const ConkerLauncherView& v,bool top) {
         game_text(out,v.stage?v.stage:"GETTING READY",160,87,260,gold,true);
         launcher_wrap(out,v.message,28,115,264,3,white);
         if(v.detail)game_text(out,v.detail,160,174,262,muted,true);
+    }else if(v.menu==3){
+        game_text(out,"LOCAL WIRELESS",160,18,280,gold,true);
+        launcher_panel(out,16,54,288,102);
+        game_text(out,v.stage?v.stage:"LOCAL WIRELESS",160,66,260,white,true);
+        launcher_wrap(out,v.detail?v.detail:v.message,28,96,264,3,muted);
+        if(v.actions){
+            launcher_panel(out,16,160,288,31);
+            game_text(out,v.actions,160,170,272,gold,true);
+        }
     }else if(v.menu==2){
         game_text(out,"GETTING READY",160,18,280,gold,true);
         launcher_panel(out,16,64,288,122);

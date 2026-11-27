@@ -1176,6 +1176,9 @@ public:
         note_ucode(task);
         // In first person the reticle's quads must stay one per record.
         interp_.set_split_untagged_ortho(rt64_3ds::first_person_scene());
+        float focus_rect[4]{};
+        const bool focus_on = rt64_3ds::query_focus_rect(rdram_, focus_rect);
+        interp_.set_focus_rect(focus_on, focus_rect[0], focus_rect[1], focus_rect[2], focus_rect[3]);
         maybe_switch_frame_size();
         if (dbg_tasks_ < 3) {
             dbg_tasks_++;

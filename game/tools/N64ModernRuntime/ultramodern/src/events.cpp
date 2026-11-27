@@ -22,6 +22,7 @@ struct RspShadow { uint32_t base; uint32_t size; const uint8_t* data; };
 extern thread_local RspShadow rsp_shadow;
 #include "ultramodern/renderer_context.hpp"
 #include "ultramodern/save_states.hpp"
+#include "ultramodern/timeline.hpp"
 
 static ultramodern::events::callbacks_t events_callbacks{};
 
@@ -195,6 +196,70 @@ extern "C" volatile uint32_t ultramodern_dbg_counts[8];   // mesgqueue.cpp
 // The VIs left until the next retrace message (the VI thread's; saved in save states).
 static std::atomic_int remaining_retraces = 1;
 
+static std::atomic_bool vi_thread_stopped = false;
+static std::atomic<uint64_t> gfx_tasks_submitted = 0;
+static std::atomic<uint64_t> gfx_tasks_finished = 0;
+static uint64_t gfx_tasks_delivered = 0;
+
+void sp_complete();
+void dp_complete();
+
+void ultramodern::timeline_parts::vi_take_over() {
+    using namespace std::chrono_literals;
+    while (!vi_thread_stopped.load(std::memory_order_acquire) && !exited) {
+        std::this_thread::sleep_for(1ms);
+    }
+    std::lock_guard lock{ events_context.message_mutex };
+    events_context.vi.cur_state = 0;
+    events_context.vi.field = 0;
+    events_context.vi.states[0] = ViState{};
+    events_context.vi.states[1] = ViState{};
+    remaining_retraces = 1;
+    gfx_tasks_delivered = gfx_tasks_submitted.load(std::memory_order_relaxed);
+    gfx_tasks_finished.store(gfx_tasks_delivered, std::memory_order_relaxed);
+}
+
+void ultramodern::timeline_parts::vi_release() {
+    vi_thread_stopped.store(false, std::memory_order_release);
+}
+
+void ultramodern::timeline_parts::vi_deliver(RDRAM_ARG1) {
+    (void)rdram;
+    if (exited) {
+        return;
+    }
+    {
+        std::lock_guard lock{ events_context.message_mutex };
+        events_context.action_queue.enqueue(ScreenUpdateAction{ events_context.vi.regs });
+        events_context.vi.update_vi();
+        remaining_retraces--;
+        ViState* cur_state = events_context.vi.get_cur_state();
+        if (remaining_retraces <= 0) {
+            if (cur_state->mq != NULLPTR) {
+                ultramodern::enqueue_external_message_src(cur_state->mq, cur_state->msg, false, ultramodern::EventMessageSource::Vi);
+            }
+            remaining_retraces = cur_state->retrace_count;
+        }
+        if (events_context.ai.mq != NULLPTR) {
+            ultramodern::enqueue_external_message_src(events_context.ai.mq, events_context.ai.msg, false, ultramodern::EventMessageSource::Ai);
+        }
+    }
+    if (events_callbacks.vi_callback != nullptr) {
+        events_callbacks.vi_callback();
+    }
+}
+
+void ultramodern::timeline_parts::dp_deliver() {
+    using namespace std::chrono_literals;
+    const uint64_t submitted = gfx_tasks_submitted.load(std::memory_order_acquire);
+    while (gfx_tasks_finished.load(std::memory_order_acquire) < submitted && !exited) {
+        std::this_thread::sleep_for(100us);
+    }
+    for (; gfx_tasks_delivered < submitted; gfx_tasks_delivered++) {
+        dp_complete();
+    }
+}
+
 void vi_thread_func() {
     ultramodern::set_native_thread_name("VI Thread");
     // This thread should be prioritized over every other thread in the application, as it's what allows
@@ -220,6 +285,12 @@ void vi_thread_func() {
             next = std::chrono::high_resolution_clock::now();
         }
         ultramodern::sleep_until(next);
+        if (ultramodern::timeline::enabled()) {
+            vi_thread_stopped.store(true, std::memory_order_release);
+            ultramodern::sleep_milliseconds(16);
+            continue;
+        }
+        vi_thread_stopped.store(false, std::memory_order_relaxed);
         auto time_now = ultramodern::time_since_start();
         // Calculate how many VIs have passed
         uint64_t new_total_vis = (time_now * (60 * ultramodern::get_speed_multiplier()) / 1000ms) + 1;
@@ -296,7 +367,12 @@ void ultramodern::renderer::report_list_drawn() {
         return;
     }
     list_drawn_reported = true;
-    dp_complete();
+    if (ultramodern::timeline::enabled()) {
+        gfx_tasks_finished.fetch_add(1, std::memory_order_release);
+    }
+    else {
+        dp_complete();
+    }
     ultramodern::save_states::task_finished();
 }
 
@@ -642,6 +718,23 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
 
     // Counted until its last message is sent, for save states (save_states.hpp).
     ultramodern::save_states::task_submitted();
+
+    if (ultramodern::timeline::enabled()) {
+        if (task->t.type == M_GFXTASK) {
+            gfx_tasks_submitted.fetch_add(1, std::memory_order_release);
+            sp_complete();
+            events_context.action_queue.enqueue(SpTaskAction{ *task, std::chrono::high_resolution_clock::now() });
+        }
+        else {
+            if (!ultramodern::rsp::run_task(PASS_RDRAM task)) {
+                fprintf(stderr, "Failed to execute task type: %" PRIu32 "\n", task->t.type);
+                ULTRAMODERN_QUICK_EXIT();
+            }
+            sp_complete();
+            ultramodern::save_states::task_finished();
+        }
+        return;
+    }
 
     // Send gfx tasks to the graphics action queue. The RSP's part of the task is reported complete here and now: the
     // graphics thread used to send that message when it took the list, which is only after the previous list's renderer

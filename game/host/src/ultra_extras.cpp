@@ -9,6 +9,7 @@
 #include "librecomp/addresses.hpp"
 #include "librecomp/game.hpp"
 #include "ultramodern/error_handling.hpp"
+#include "ultramodern/timeline.hpp"
 #include "ultramodern/ultra64.h"
 
 #include "conker.hpp"
@@ -69,6 +70,7 @@ extern "C" void conker_spin_wait_pass(uint8_t* rdram, recomp_context* ctx) {
 namespace {
     constexpr int sequence_players = 3; // D_8003C900
     std::chrono::steady_clock::time_point song_started_at[sequence_players];
+    uint64_t song_started_virtual[sequence_players] = {};
     bool song_just_started[sequence_players] = {};
 }
 
@@ -81,6 +83,7 @@ extern "C" void conker_song_started(uint8_t* rdram, recomp_context* ctx) {
     }
     song_just_started[player] = true;
     song_started_at[player] = std::chrono::steady_clock::now();
+    song_started_virtual[player] = ultramodern::timeline::delivery_time();
 }
 
 // func_10008F24 (stop a player) at its start: $a0 the player number.
@@ -94,11 +97,15 @@ extern "C" void conker_song_stopped(uint8_t* rdram, recomp_context* ctx) {
 // func_1000853C (a player's state) at 0x10008560, after reading it: $v0 the state, $a1 the player.
 extern "C" void conker_song_state(uint8_t* rdram, recomp_context* ctx) {
     constexpr auto start_limit = std::chrono::milliseconds(500);
+    constexpr uint64_t virtual_start_limit = 46'875'000 / 2; // 500 ms in virtual VI ticks
     const uint32_t player = (uint32_t)ctx->r5 & 0xFF;
     if (player >= sequence_players || !song_just_started[player]) {
         return;
     }
-    if ((int32_t)ctx->r2 != 0 || std::chrono::steady_clock::now() - song_started_at[player] > start_limit) {
+    const bool expired = ultramodern::timeline::enabled()
+        ? (ultramodern::timeline::delivery_time() - song_started_virtual[player] > virtual_start_limit)
+        : (std::chrono::steady_clock::now() - song_started_at[player] > start_limit);
+    if ((int32_t)ctx->r2 != 0 || expired) {
         song_just_started[player] = false;
         return;
     }

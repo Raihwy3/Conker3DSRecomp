@@ -39,6 +39,7 @@ add_executable(ConkerRecomp
     updater/native_update.c
     updater/native_update_http.c
     updater/native_update_3ds.c
+    netplay/netplay_uds_3ds.cpp
     conker_reticle.cpp
     conker_modifiers.cpp
     conker_tlb_pages.cpp

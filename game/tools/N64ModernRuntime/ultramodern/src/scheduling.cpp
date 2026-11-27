@@ -1,5 +1,6 @@
 #include "ultramodern/ultramodern.hpp"
 #include "ultramodern/save_states.hpp"
+#include "ultramodern/timeline.hpp"
 
 void ultramodern::schedule_running_thread(RDRAM_ARG PTR(OSThread) t_) {
     debug_printf("[Scheduling] Adding thread %d to the running queue\n", TO_PTR(OSThread, t_)->id);
@@ -35,18 +36,33 @@ extern "C" void pause_self(RDRAM_ARG1) {
         // The idle thread runs only while every other game thread waits: the moment save states are
         // taken and loaded at (save_states.hpp).
         ultramodern::save_states::on_idle(PASS_RDRAM1);
-        // Wait until an external message arrives, then allow the next thread to run.
-        ultramodern::wait_for_external_message(PASS_RDRAM1);
+        if (ultramodern::timeline::enabled()) {
+            ultramodern::timeline::deliver(PASS_RDRAM true, 0);
+        }
+        else {
+            // Wait until an external message arrives, then allow the next thread to run.
+            ultramodern::wait_for_external_message(PASS_RDRAM1);
+        }
         ultramodern::check_running_queue(PASS_RDRAM1);
     }
 }
 
 extern "C" void yield_self(RDRAM_ARG1) {
-    ultramodern::wait_for_external_message(PASS_RDRAM1);
+    if (ultramodern::timeline::enabled()) {
+        ultramodern::timeline::deliver(PASS_RDRAM false, 46'875);
+    }
+    else {
+        ultramodern::wait_for_external_message(PASS_RDRAM1);
+    }
     ultramodern::check_running_queue(PASS_RDRAM1);
 }
 
 extern "C" void yield_self_1ms(RDRAM_ARG1) {
-    ultramodern::wait_for_external_message_timed(PASS_RDRAM1, 1);
+    if (ultramodern::timeline::enabled()) {
+        ultramodern::timeline::deliver(PASS_RDRAM false, 46'875);
+    }
+    else {
+        ultramodern::wait_for_external_message_timed(PASS_RDRAM1, 1);
+    }
     ultramodern::check_running_queue(PASS_RDRAM1);
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0-r2 (Wireless Multiplayer Test)
+
+- Added experimental 2–4 player **3DS Local Wireless (`nwm::UDS`) lockstep multiplayer** (press **Y: WIRELESS** on the Select Version screen to Host or Join a room; requires the same ROM on each console).
+- Added **per-player fullscreen rendering** during splitscreen multiplayer so each 3DS renders only its own player's view fullscreen and skips other players' viewports for much better performance.
+- Added deterministic virtual timeline, audio length, and music-start timing for lockstep sync, plus automatic recovery to local control if the host disconnects.
+- Added `nwm::UDS` service permission to the CIA build.
+
 ## 0.3.0-r1
 
 - Fixed CIA updates failing with "Unable to save the CIA on the SD card." when a previous `launcher-update.cia` already exists on the SD card.

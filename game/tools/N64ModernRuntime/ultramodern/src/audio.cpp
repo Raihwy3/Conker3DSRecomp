@@ -1,5 +1,6 @@
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
+#include "ultramodern/timeline.hpp"
 #include <cassert>
 #include <atomic>
 #include <chrono>
@@ -102,6 +103,10 @@ float buffer_offset_frames = 0.5f;
 // the remaining sample count and reporting a number that's too high here can lead to issues.
 // Reporting a number that's too low can lead to audio lag in some games.
 uint32_t ultramodern::get_remaining_audio_bytes() {
+    if (ultramodern::timeline::enabled()) {
+        // Real-time host audio buffer depth varies per console and desyncs lockstep.
+        return 0;
+    }
     // Get the number of remaining buffered audio bytes.
     uint32_t buffered_byte_count;
     if (audio_callbacks.get_frames_remaining != nullptr) {

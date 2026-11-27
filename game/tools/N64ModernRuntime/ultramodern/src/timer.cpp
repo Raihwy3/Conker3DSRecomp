@@ -10,6 +10,7 @@
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
 #include "ultramodern/save_states.hpp"
+#include "ultramodern/timeline.hpp"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -90,8 +91,84 @@ std::chrono::high_resolution_clock::time_point ticks_to_timepoint(uint64_t ticks
     return start_time + ticks_to_duration(ticks + clock_offset.load(std::memory_order_relaxed));
 }
 
-uint64_t time_now() {
+static std::atomic<bool> virtual_clock = false;
+constexpr uint64_t virtual_ticks_per_read = 47;
+static std::atomic<uint64_t> virtual_now = 0;
+
+uint64_t real_time_now() {
     return duration_to_ticks(std::chrono::high_resolution_clock::now() - start_time) - clock_offset.load(std::memory_order_relaxed);
+}
+
+uint64_t time_now() {
+    if (virtual_clock.load(std::memory_order_relaxed)) {
+        return virtual_now.fetch_add(virtual_ticks_per_read, std::memory_order_relaxed) + virtual_ticks_per_read;
+    }
+    return real_time_now();
+}
+
+void ultramodern::timeline_parts::clock_enable() {
+    virtual_now.store(0, std::memory_order_relaxed);
+    virtual_clock.store(true, std::memory_order_release);
+    timer_context.action_queue.enqueue(RemoveTimerAction{ NULLPTR });
+}
+
+void ultramodern::timeline_parts::clock_disable() {
+    const uint64_t vnow = virtual_now.load(std::memory_order_relaxed);
+    const uint64_t raw = duration_to_ticks(std::chrono::high_resolution_clock::now() - start_time);
+    clock_offset.store((int64_t)raw - (int64_t)vnow, std::memory_order_relaxed);
+    virtual_clock.store(false, std::memory_order_release);
+    timer_context.action_queue.enqueue(RemoveTimerAction{ NULLPTR });
+}
+
+void ultramodern::timeline_parts::clock_advance_to(uint64_t ticks) {
+    uint64_t cur = virtual_now.load(std::memory_order_relaxed);
+    while (cur < ticks && !virtual_now.compare_exchange_weak(cur, ticks, std::memory_order_relaxed)) {
+    }
+}
+
+static void process_timer_action_locked(const Action& action);
+
+bool ultramodern::timeline_parts::timers_next_deadline(RDRAM_ARG uint64_t& deadline) {
+    (void)rdram;
+    std::lock_guard lock(timer_context.mutex);
+    Action cur_action;
+    while (timer_context.action_queue.try_dequeue(cur_action)) {
+        process_timer_action_locked(cur_action);
+    }
+    if (timer_context.firing_order.empty()) {
+        return false;
+    }
+    deadline = timer_context.firing_order.begin()->first;
+    return true;
+}
+
+void ultramodern::timeline_parts::timers_fire_due(RDRAM_ARG uint64_t ticks) {
+    (void)rdram;
+    std::lock_guard lock(timer_context.mutex);
+    Action cur_action;
+    while (timer_context.action_queue.try_dequeue(cur_action)) {
+        process_timer_action_locked(cur_action);
+    }
+    while (!timer_context.firing_order.empty()) {
+        const OSTime timestamp = timer_context.firing_order.begin()->first;
+        if (timestamp > ticks) {
+            return;
+        }
+        const PTR(OSTimer) cur_timer_ = timer_context.firing_order.begin()->second;
+        auto it = timer_context.active_timers.find(cur_timer_);
+        timer_context.firing_order.erase(timer_context.firing_order.begin());
+        if (it == timer_context.active_timers.end()) {
+            continue;
+        }
+        ActiveTimer fired = it->second;
+        timer_context.active_timers.erase(it);
+        ultramodern::enqueue_external_message_src(fired.mq, fired.msg, false, ultramodern::EventMessageSource::Timer);
+        if (fired.interval != 0) {
+            fired.timestamp += fired.interval;
+            timer_context.active_timers[cur_timer_] = fired;
+            timer_context.firing_order.insert({ fired.timestamp, cur_timer_ });
+        }
+    }
 }
 
 extern "C" volatile uint32_t ultramodern_dbg_counts[8];   // mesgqueue.cpp
@@ -122,6 +199,12 @@ void timer_thread(RDRAM_ARG1) {
 
     while (true) {
         ultramodern_dbg_counts[3] = ultramodern_dbg_counts[3] + 1;
+        if (virtual_clock.load(std::memory_order_acquire)) {
+            lock.unlock();
+            ultramodern::sleep_milliseconds(16);
+            lock.lock();
+            continue;
+        }
         // Empty the action queue
         Action cur_action;
         while (timer_context.action_queue.try_dequeue(cur_action)) {

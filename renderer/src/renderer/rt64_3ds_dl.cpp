@@ -1272,6 +1272,13 @@ struct Interpreter::Impl {
     uint32_t sc_lorigin = 0x800, sc_rorigin = 0x800;
     float sc_off[4]{}, sc_bound[4]{};
 
+    // Splitscreen focus mode (netplay "My View Only"):
+    // focus_mode: 0 = Fullscreen (pass through), 1 = Remap to full screen, 2 = Skip other player.
+    bool focus_active = false;
+    float focus_rect[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    float focus_sx = 1.0f, focus_sy = 1.0f;
+    uint8_t focus_mode = 0;
+
     // Framebuffer effects: the game copies the front buffer into a storage
     // buffer in RDRAM with texture rectangles, then draws with it. Draws
     // into the storage are dropped; the first one requests a GPU snapshot of
@@ -2164,6 +2171,7 @@ struct Interpreter::Impl {
         if (cimg != plain_cimg || cur_rtt >= 0) note_target(false);
         if (skim) return;
         if (offscreen_target() && cur_rtt < 0) return;
+        if (focus_active && focus_mode == 2 && cur_rtt < 0 && !cimg_is_depth_memory() && !bottom_span) return;
         if (i0 >= kMaxVerts || i1 >= kMaxVerts || i2 >= kMaxVerts) {
             warn_lost();
             stats->tris_lost_index++;
@@ -2469,6 +2477,24 @@ struct Interpreter::Impl {
             static const float kNone[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
             emit_rect_aligned(ulx, uly, lrx, lry, textured, tile, s, t, dsdx, dtdy, flip, 0.0f, 0.0f, kNone, false);
             return;
+        }
+        if (focus_active && cur_rtt < 0 && !cimg_is_depth_memory()) {
+            if (focus_mode == 2) return;
+            if (focus_mode == 1) {
+                ulx = (ulx - focus_rect[0]) * focus_sx;
+                lrx = (lrx - focus_rect[0]) * focus_sx;
+                uly = (uly - focus_rect[1]) * focus_sy;
+                lry = (lry - focus_rect[1]) * focus_sy;
+                if (textured) {
+                    dsdx /= focus_sx;
+                    dtdy /= focus_sy;
+                }
+            } else if (!textured) {
+                // Hide thin splitscreen divider bars drawn under a fullscreen scissor.
+                const bool horiz_div = (lry - uly <= 6.0f) && (std::fabs(uly - focus_rect[1]) <= 6.0f || std::fabs(uly - focus_rect[3]) <= 6.0f);
+                const bool vert_div = (lrx - ulx <= 6.0f) && (std::fabs(ulx - focus_rect[0]) <= 6.0f || std::fabs(ulx - focus_rect[2]) <= 6.0f);
+                if (horiz_div || vert_div) return;
+            }
         }
         const float align[4] = { rect_align[0] + origin_place(rect_lorigin), rect_align[1], rect_align[2] + origin_place(rect_rorigin), rect_align[3] };
         emit_rect_aligned(ulx, uly, lrx, lry, textured, tile, s, t, dsdx, dtdy, flip, origin_shift(rect_lorigin), origin_shift(rect_rorigin), align,
@@ -2951,6 +2977,22 @@ struct Interpreter::Impl {
         raw_vtrans_x = (float)r16(addr + 8);
         vp.trans[1] = r16(addr + 10) / 4.0f;
         vp.trans[2] = r16(addr + 12);
+        if (focus_active && !bottom_span && cur_rtt < 0 && !cimg_is_depth_memory()) {
+            const float vx = raw_vtrans_x / 4.0f;
+            const float vy = vp.trans[1];
+            const float vw = std::fabs(vp.scale[0]) * 2.0f;
+            const float vh = std::fabs(vp.scale[1]) * 2.0f;
+            const bool is_sub = (vw < (float)screen_w - 32.0f) || (vh < (float)screen_h - 32.0f);
+            const bool inside = (vx >= focus_rect[0] - 8.0f && vx <= focus_rect[2] + 8.0f &&
+                                 vy >= focus_rect[1] - 8.0f && vy <= focus_rect[3] + 8.0f);
+            if (is_sub && inside) {
+                const float s_uni = std::max(focus_sx, focus_sy);
+                vp.scale[0] *= s_uni;
+                vp.scale[1] *= focus_sy;
+                raw_vtrans_x = ((vx - focus_rect[0]) * focus_sx) * 4.0f;
+                vp.trans[1] = (vy - focus_rect[1]) * focus_sy;
+            }
+        }
         update_vp_depth();
         apply_viewport_align();
     }
@@ -3094,6 +3136,7 @@ struct Interpreter::Impl {
 
     bool run(uint32_t data_ptr) {
         tex_seq++;   // FrameRecord::tlut restarts: cached palette indices are stale
+        focus_mode = 0;
         uint32_t stack[kMaxDlDepth];
         int depth = 0;
         uint32_t pc = seg(data_ptr);
@@ -3432,6 +3475,35 @@ struct Interpreter::Impl {
                         scissor[1] = (int16_t)lroundf(held(uly + sc_off[1], sc_bound[1], sc_bound[3]));
                         scissor[2] = (int16_t)lroundf(held(lrx + sc_off[2] + origin_place(sc_rorigin), sc_bound[0], sc_bound[2]) + origin_shift(sc_rorigin));
                         scissor[3] = (int16_t)lroundf(held(lry + sc_off[3], sc_bound[1], sc_bound[3]));
+                    }
+                    if (focus_active && !bottom_span && cur_rtt < 0 && !cimg_is_depth_memory()) {
+                        const int sw = scissor[2] - scissor[0];
+                        const int sh = scissor[3] - scissor[1];
+                        if (sw >= screen_w - 32 && sh >= screen_h - 32) {
+                            focus_mode = 0;
+                        } else {
+                            const bool overlaps = (scissor[2] > focus_rect[0] + 4.0f) &&
+                                                  (scissor[0] < focus_rect[2] - 4.0f) &&
+                                                  (scissor[3] > focus_rect[1] + 4.0f) &&
+                                                  (scissor[1] < focus_rect[3] - 4.0f);
+                            if (!overlaps) {
+                                focus_mode = 2;
+                            } else {
+                                focus_mode = 1;
+                                auto mx = [&](float x) -> int16_t {
+                                    int v = (int)lroundf((x - focus_rect[0]) * focus_sx);
+                                    return (int16_t)(v < 0 ? 0 : (v > screen_w ? screen_w : v));
+                                };
+                                auto my = [&](float y) -> int16_t {
+                                    int v = (int)lroundf((y - focus_rect[1]) * focus_sy);
+                                    return (int16_t)(v < 0 ? 0 : (v > screen_h ? screen_h : v));
+                                };
+                                scissor[0] = mx((float)scissor[0]);
+                                scissor[1] = my((float)scissor[1]);
+                                scissor[2] = mx((float)scissor[2]);
+                                scissor[3] = my((float)scissor[3]);
+                            }
+                        }
                     }
                     else if (scissor_slack > 0) {
                         // RenderDesc::scissor_edge_slack: the frame's edges.
@@ -4229,6 +4301,20 @@ void Interpreter::set_world_proj_ids(const uint32_t* ids, int count) {
     set_world_proj_ranges(ranges, count);
 }
 void Interpreter::set_split_untagged_ortho(bool on) { impl_->split_untagged_ortho = on; }
+void Interpreter::set_focus_rect(bool active, float x0, float y0, float x1, float y1) {
+    impl_->focus_active = active && (x1 - x0 >= 60.0f) && (y1 - y0 >= 60.0f);
+    if (impl_->focus_active) {
+        impl_->focus_rect[0] = x0;
+        impl_->focus_rect[1] = y0;
+        impl_->focus_rect[2] = x1;
+        impl_->focus_rect[3] = y1;
+        impl_->focus_sx = (float)impl_->screen_w / (x1 - x0);
+        impl_->focus_sy = (float)impl_->screen_h / (y1 - y0);
+    } else {
+        impl_->focus_sx = impl_->focus_sy = 1.0f;
+    }
+    impl_->focus_mode = 0;
+}
 void Interpreter::set_aim_hash(bool on, const TexShape* shapes, size_t shape_count, bool all) {
     impl_->aim_hash = on;
     impl_->aim_shapes = shapes;

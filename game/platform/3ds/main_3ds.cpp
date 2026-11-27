@@ -1,5 +1,6 @@
 #include "conker_rom_choices.h"
 #include "conker_launcher.h"
+#include "netplay/netplay_uds_3ds.h"
 // Conker's Bad Fur Day: Recompiled, Nintendo 3DS entry point.
 #include <cinttypes>
 #include <atomic>
@@ -33,7 +34,7 @@ static std::atomic<bool> g_free_camera{true};
 static std::atomic<bool> g_first_person_camera{false};
 static std::atomic<bool> g_achievement_popups{true};
 extern "C" bool conker_3ds_free_camera_enabled() {
-    return g_free_camera.load();
+    return !conker_netplay::is_active() && g_free_camera.load();
 }
 extern "C" bool conker_3ds_first_person_enabled() {
     return g_first_person_camera.load();
@@ -81,7 +82,7 @@ bool conker::model_detail::always_highest() {
 }
 
 ultramodern::input::connected_device_info_t conker::get_connected_device_info(int controller_num) {
-    if (controller_num == 0) {
+    if (controller_num >= 0 && controller_num < conker_netplay::player_count()) {
         return { ultramodern::input::Device::Controller, ultramodern::input::Pak::None };
     }
     return { ultramodern::input::Device::None, ultramodern::input::Pak::None };
@@ -402,6 +403,42 @@ void on_thread_create(uint8_t*, recomp_context* ctx) {
     set_fr_mode(ctx);
 }
 
+bool conker_netplay_focus_rect(const uint8_t* rdram, float out_rect[4]) {
+    if (!conker_netplay::is_active() || !rdram) return false;
+    const int port = conker_netplay::local_port();
+    if (port < 0 || port >= 4) return false;
+    auto read_u32 = [rdram](uint32_t vaddr) -> uint32_t {
+        if (vaddr < 0x80000000u || vaddr >= 0x80800000u) return 0;
+        uint32_t w = 0;
+        std::memcpy(&w, rdram + (vaddr & 0x7FFFFFu), 4);
+        return w;
+    };
+    auto read_f32 = [&](uint32_t vaddr) -> float {
+        const uint32_t w = read_u32(vaddr);
+        float f = 0.0f;
+        std::memcpy(&f, &w, 4);
+        return f;
+    };
+    const uint32_t cam_base = read_u32(0x800BE628u);
+    if (cam_base < 0x80000000u || cam_base >= 0x807FF000u) return false;
+    auto read_cam = [&](int idx, float r[4]) -> bool {
+        const uint32_t base = cam_base + (uint32_t)idx * 0x180u;
+        const float top = read_f32(base + 0x24u);
+        const float bottom = read_f32(base + 0x28u);
+        const float left = read_f32(base + 0x2Cu);
+        const float right = read_f32(base + 0x30u);
+        if (!(left >= 0.0f && right <= 320.0f && top >= 0.0f && bottom <= 240.0f)) return false;
+        const float w = right - left, h = bottom - top;
+        if (w < 60.0f || h < 60.0f) return false;
+        if (w >= 250.0f && h >= 180.0f) return false;
+        r[0] = left; r[1] = top; r[2] = right; r[3] = bottom;
+        return true;
+    };
+    float c0[4]{};
+    if (!read_cam(0, c0)) return false;
+    return read_cam(port, out_rect);
+}
+
 void conker_on_init_3ds(uint8_t* rdram, recomp_context* ctx) {
     conker_exit_photo_mode_ui();
     recomp3ds::screen_conker_set_rdram(rdram);
@@ -424,6 +461,12 @@ void conker_on_init_3ds(uint8_t* rdram, recomp_context* ctx) {
     conker::local_achievements::init();
     conker::save_states::init();
     refresh_achievement_labels();
+    if (conker_netplay::is_active()) {
+        recomp3ds::input_set_gyro(false);
+        recomp3ds::input_set_connected_ports(conker_netplay::player_count());
+        rt64_3ds::set_focus_rect_query(conker_netplay_focus_rect);
+        conker_netplay::on_game_init();
+    }
 }
 
 void register_conker_overlays_and_exports() {
@@ -516,6 +559,14 @@ static int choose_rom() {
             conker_download_texpack(&top, &bottom);
             redraw=true;
         }
+        if(released && !translations && (down&KEY_Y)){
+            const int idx = (selected < 2 && present[selected]) ? selected : (present[0] ? 0 : (present[1] ? 1 : -1));
+            if (idx >= 0 && conker_netplay::run_local_wireless_lobby(&top, &bottom, choices[idx].hash)) {
+                result = idx;
+                break;
+            }
+            redraw=true;
+        }
         if (redraw) {
             ConkerLauncherView view{};
             view.menu=1;view.selected=selected;
@@ -523,7 +574,7 @@ static int choose_rom() {
             view.message="Pick a version below. Your ROM is checked before the game starts.";
             view.detail="SAVES AND SETTINGS ARE SHARED";
             const bool has_texpack = access("sdmc:/3ds/ConkerRecomp/texpack.bin", F_OK) == 0;
-            view.actions=translations?"A: SELECT    B: BACK    < >: PAGE":has_texpack?"A: SELECT   X: RE-DL HD   B: EXIT":"A: SELECT   X: HD TEX   B: EXIT";
+            view.actions=translations?"A: SELECT    B: BACK    < >: PAGE":has_texpack?"A: PLAY  Y: WIRELESS  X: HD  B: EXIT":"A: PLAY  Y: WIRELESS  X: HD  B: EXIT";
             for(int row=0;row<3;++row){
                 if(!translations){
                     const bool folder=row==2;
@@ -634,6 +685,7 @@ int main(int argc, char** argv) {
         snprintf(path,sizeof(path),"sdmc:/3ds/ConkerRecomp/%s",(const char*)game.entry.rom_filename.c_str());
         conker_set_rom_path(path);
         if (version!=g_launcher_art_rom && !recomp3ds::screen_conker_load_rom(path)) recomp3ds::screen_set_conker_theme(false);
+        game.keep_wireless = conker_netplay::is_active();
         return true;
     };
     recomp::Version::from_string(CONKER_LAUNCHER_VERSION, desc.project_version);
@@ -736,5 +788,7 @@ int main(int argc, char** argv) {
         value_model_highest = 0;
         conker3ds::set("model_highest", 0);
     }
-    return recomp3ds::run(desc);
+    const int rc = recomp3ds::run(desc);
+    conker_netplay::shutdown();
+    return rc;
 }

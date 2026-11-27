@@ -503,9 +503,16 @@ void recomp3ds::input_set_controller_pak(ultramodern::input::Pak pak) {
     g_controller_pak = pak;
 }
 
+static std::atomic<int> g_connected_ports{ 1 };
+
+void recomp3ds::input_set_connected_ports(int count) {
+    g_connected_ports.store(count < 1 ? 1 : (count > 4 ? 4 : count), std::memory_order_relaxed);
+}
+
 ultramodern::input::connected_device_info_t recomp3ds::input_device_info(int controller_num) {
+    const int ports = g_connected_ports.load(std::memory_order_relaxed);
     ultramodern::input::connected_device_info_t info{};
-    info.connected_device = controller_num == 0 ? ultramodern::input::Device::Controller : ultramodern::input::Device::None;
-    info.connected_pak = controller_num == 0 ? g_controller_pak : ultramodern::input::Pak::None;
+    info.connected_device = (controller_num >= 0 && controller_num < ports) ? ultramodern::input::Device::Controller : ultramodern::input::Device::None;
+    info.connected_pak = (controller_num == 0 && ports == 1) ? g_controller_pak : ultramodern::input::Pak::None;
     return info;
 }
