@@ -326,7 +326,10 @@ void recomp3ds::screen_conker_set_rdram(const uint8_t* rdram) { g_conker_rdram=r
 void recomp3ds::screen_conker_set_player_camera_query(bool (*active)()) { g_conker_player_camera=active; }
 void recomp3ds::screen_conker_update() {
     update_conker_status();
-    const u64 tail_tick=svcGetSystemTick()/(SYSCLOCK_ARM11/30);
+    static bool checked_n3ds = false, is_n3ds = true;
+    if (!checked_n3ds) { APT_CheckNew3DS(&is_n3ds); checked_n3ds = true; }
+    const u64 tail_hz = is_n3ds ? 30 : 15;
+    const u64 tail_tick=svcGetSystemTick()/(SYSCLOCK_ARM11/tail_hz);
     if(g_conker_animated_tails && g_conker_lives>0 && g_conker_lives_display!=2 && !g_conker_menu && tail_tick!=g_conker_tail_tick){
         g_conker_tail_tick=tail_tick;g_screen_dirty=true;
     }

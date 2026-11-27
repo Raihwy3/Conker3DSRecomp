@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0-r1
+
+- Fixed CIA updates failing with "Unable to save the CIA on the SD card." when a previous `launcher-update.cia` already exists on the SD card.
+- Improved Old 3DS / Old 2DS performance and memory headroom:
+  - Skipped the unused per-frame GPU depth-buffer copy when 3D is off.
+  - Defaulted bottom-screen animated tails to Off on Old 3DS (throttled to 15 Hz when enabled) and replaced software `/ 255` divides in bottom-screen HUD blending with fast integer shift math.
+  - Kept the GPU command buffer at 512 KB on Old 3DS, lazy-allocated post-processing and frame-readback buffers, and skipped allocating right-eye/depth-copy buffers on Old 2DS (~1.4 MB more free linear RAM on Old 3DS; ~1.6 MB linear RAM + 576 KB VRAM on Old 2DS).
+
 ## 0.3.0
 
 - Fixed the broken intro (Conker standing still, respawning at the checkpoint) caused by "Cheat: Unlock chapters" overwriting the game's story progress. It now only enables the game's own chapter-unlock flag and never touches saves.

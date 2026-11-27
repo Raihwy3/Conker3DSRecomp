@@ -112,8 +112,9 @@ int conker_update_startup(PrintConsole *top,PrintConsole *bottom){
             remove(job.file);return prompt("UPDATE NOT SAVED",error,"A: Play  B: Exit")>0;
         }
         snprintf(path,sizeof path,"%s/launcher-update.cia",directory);
-        // Keep an older download if staging or verification failed.
-        if(rename(job.file,path))return prompt("UPDATE NOT SAVED","Unable to save the CIA on the SD card.","A: Play  B: Exit")>0;
+        // Replace any older download only after staging and verification succeeded; 3DS rename fails if destination exists.
+        remove(path);
+        if(rename(job.file,path)){remove(job.file);return prompt("UPDATE NOT SAVED","Unable to save the CIA on the SD card.","A: Play  B: Exit")>0;}
         return prompt("CIA UPDATE READY","Close the game. In FBI, install /3ds/ConkerRecomp/launcher-update.cia. Saves and settings stay in place.","A: Exit  B: Play")<0;
     }
     snprintf(path,sizeof path,"%s/launcher-update.zip",directory);remove(path);

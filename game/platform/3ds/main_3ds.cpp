@@ -125,6 +125,7 @@ const MenuDefault kDefaults[] = {
     { "aim_swap_sticks", 0 },
     { "achievement_popups", 1 },
     { "loading_indicator", 1 },
+    { "bottom_animated_tails", 0, MenuDefault::Old3dsOnly },
 };
 
 int g_touch_mode = 1;

@@ -513,6 +513,10 @@ public:
             C3D_TexDelete(&loading_tex_);
             loading_tex_ok_ = false;
         }
+        if (post_ok_) {
+            C3D_TexDelete(&post_tex_);
+            post_ok_ = false;
+        }
         if (loading_vbo_) {
             linearFree(loading_vbo_);
             loading_vbo_ = nullptr;
@@ -1331,6 +1335,17 @@ private:
         LightLock_Init(&g_gpu_lock);
         g_gpu_lock_ready = true;
         aptHook(&g_apt_post_cookie, apt_post_hook, nullptr);   // before citro3d's: runs after it
+        {
+            bool n3ds = false;
+            APT_CheckNew3DS(&n3ds);
+            new_3ds_ = n3ds;
+        }
+        bool no_3d = false;
+        if (!new_3ds_ && R_SUCCEEDED(cfguInit())) {
+            u8 model = 0;
+            if (R_SUCCEEDED(CFGU_GetSystemModel(&model)) && model == CFG_MODEL_2DS) no_3d = true;
+            cfguExit();
+        }
         wide_800_ = rt64_3ds::settings().wide_800 != 0;
         color16_ = rt64_3ds::render_desc().eye_color16;
         top_h_ = wide_800_ ? 800 : 400;
@@ -1344,7 +1359,8 @@ private:
             gfxSetWide(false);
             gfxSet3D(false);
         }
-        if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4) && !C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 2)) {
+        const size_t cmdbuf_bytes = new_3ds_ ? (C3D_DEFAULT_CMDBUF_SIZE * 4) : (C3D_DEFAULT_CMDBUF_SIZE * 2);
+        if (!C3D_Init(cmdbuf_bytes) && (!new_3ds_ || !C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 2))) {
             aptUnhook(&g_apt_post_cookie);
             g_gpu_lock_ready = false;
             fprintf(stderr, "rt64-3ds: C3D_Init failed\n");
@@ -1381,7 +1397,7 @@ private:
         sample_scale_ = (!wide_800_ && rt64_3ds::settings().supersampling) ? 2 : 1;
         auto make_eyes = [&] {
             top_ = C3D_RenderTargetCreate(240 * sample_scale_, top_h_, eye_color, eye_depth);
-            top_r_ = wide_800_ ? nullptr : C3D_RenderTargetCreate(240 * sample_scale_, 400, eye_color, eye_depth);
+            top_r_ = (wide_800_ || no_3d) ? nullptr : C3D_RenderTargetCreate(240 * sample_scale_, 400, eye_color, eye_depth);
             black_ = C3D_RenderTargetCreate(240 * sample_scale_, top_h_, eye_color, C3D_DEPTHTYPE(-1));
             if (sample_scale_ == 2 || wide_800_) {
                 resolve_target_ = C3D_RenderTargetCreate(240, 400, eye_color, C3D_DEPTHTYPE(-1));
@@ -1400,7 +1416,7 @@ private:
             fprintf(stderr, "rt64-3ds: insufficient VRAM for 800p mode; using standard resolution\n");
             make_eyes();
         }
-        if (sample_scale_ == 2 && (!top_ || !top_r_ || !black_ || !resolve_target_ || !resolve_linear_)) {
+        if (sample_scale_ == 2 && (!top_ || (!wide_800_ && !no_3d && !top_r_) || !black_ || !resolve_target_ || !resolve_linear_)) {
             for (auto* t : {top_, top_r_, black_, resolve_target_}) if (t) C3D_RenderTargetDelete(t);
             top_ = top_r_ = black_ = resolve_target_ = nullptr;
             if (resolve_linear_) linearFree(resolve_linear_);
@@ -1421,9 +1437,9 @@ private:
         fprintf(stderr, "rt64-3ds: render resolution %dx%d -> %dx240 (%s)\n",
                 top_h_, 240 * sample_scale_, top_h_,
                 wide_800_ ? "800p wide" : sample_scale_ == 2 ? "2x supersampling" : "native");
-        if (rt64_3ds::render_desc().screen_filters) {
-            post_ok_ = C3D_TexInit(&post_tex_, 256, wide_800_ ? 1024 : 512, color16_ ? GPU_RGB565 : GPU_RGBA8);
-            if (post_ok_) { C3D_TexSetFilter(&post_tex_, GPU_LINEAR, GPU_LINEAR); C3D_TexSetWrap(&post_tex_, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE); }
+        if (rt64_3ds::render_desc().screen_filters &&
+            (rt64_3ds::settings().image_filter != 0 || rt64_3ds::settings().image_bloom != 0)) {
+            ensure_post_tex();
         }
         if (rt64_3ds::render_desc().hud_on_bottom_supported) init_bottom();
         save_tex_ok_=true;
@@ -1461,8 +1477,10 @@ private:
         frame_trace_first_ = rt64_3ds::settings().dbg_frame_trace_from;
         frame_trace_count_ = rt64_3ds::settings().dbg_frame_trace_count;
         depth_copy_bytes_ = C3D_CalcDepthBufSize(240 * sample_scale_, top_h_, eye_depth);
-        depth_copy_ = (u8*)linearAlloc(depth_copy_bytes_);
-        fprintf(stderr, "rt64-3ds: depth read %s\n", depth_copy_ != nullptr ? "from a GPU copy in linear memory" : "from VRAM");
+        if (!no_3d || rt64_3ds::render_desc().depth_to_rdram) {
+            depth_copy_ = (u8*)linearAlloc(depth_copy_bytes_);
+        }
+        fprintf(stderr, "rt64-3ds: depth read %s\n", depth_copy_ != nullptr ? "from a GPU copy in linear memory" : (no_3d ? "disabled (2D)" : "from VRAM"));
 
         dvlb_ = DVLB_ParseFile((u32*)rt64_3ds_shbin, rt64_3ds_shbin_size);
         shaderProgramInit(&prog_);
@@ -1492,7 +1510,6 @@ private:
         }
         LightLock_Init(&g_readback_lock);
         ensure_toast_lock();
-        for (int i = 0; i < 2; i++) g_readback[i] = (u16*)linearAlloc(240 * 400 * sizeof(u16));
         if (vbo_[0] == nullptr || vbo_[1] == nullptr) {
             fprintf(stderr, "rt64-3ds: vertex buffer allocation failed\n");
             return;
@@ -1818,6 +1835,7 @@ private:
         // A full-screen quad after the frame's vertices, for the ghost pass.
         const rt64_3ds::Settings& eff = rt64_3ds::settings();
         const bool ghost = n + 6 <= kVboVerts && write_ghost_quad(vb + n);
+        if ((eff.image_filter != 0 || eff.image_bloom != 0) && !offscreen_frame) ensure_post_tex();
         const bool post = post_ok_ && (eff.image_filter != 0 || eff.image_bloom != 0) && n + 78 <= kVboVerts && !offscreen_frame;
         const bool vignette = eff.image_vignette != 0 && n + 174 <= kVboVerts && !offscreen_frame;
         if (post) {
@@ -2073,9 +2091,11 @@ private:
             flush_cmdbuf_midframe(pass, eye, vb, !offscreen_frame);
         }
         // A game frame's depth, copied once its left eye's draws are queued
-        // (the next game frame reads it).
+        // (the next game frame reads it). Skip when 3D is off and the game
+        // does not read depth back into RDRAM.
         if (pass == 0 && !inbetween) {
-            depth_copy_ready_ = depth_copy_ != nullptr && !offscreen_frame;
+            const bool need_depth = sfd.on || rt64_3ds::render_desc().depth_to_rdram;
+            depth_copy_ready_ = need_depth && depth_copy_ != nullptr && !offscreen_frame;
             if (depth_copy_ready_) {
                 if (!eye_replay) close_segment();
                 queue_depth_copy();
@@ -2894,7 +2914,18 @@ private:
     // like the snapshot copy: citro3d waits for the frame's GPU work first,
     // and C3D_FrameBegin for the transfer.
     int readback_next_ = 0;
+    bool readback_tried_ = false;
     bool start_readback() {
+        if (rt64_3ds::keeping_frames() && g_readback[0] == nullptr && !readback_tried_) {
+            readback_tried_ = true;
+            g_readback[0] = (u16*)linearAlloc(240 * 400 * sizeof(u16));
+            g_readback[1] = (u16*)linearAlloc(240 * 400 * sizeof(u16));
+            if (g_readback[0] == nullptr || g_readback[1] == nullptr) {
+                for (int i = 0; i < 2; i++) {
+                    if (g_readback[i] != nullptr) { linearFree(g_readback[i]); g_readback[i] = nullptr; }
+                }
+            }
+        }
         if (!rt64_3ds::keeping_frames() || g_readback[0] == nullptr || frames_ < 2) {
             if (g_readback_ready >= 0) {
                 LightLock_Lock(&g_readback_lock);
@@ -3071,6 +3102,16 @@ private:
     void* resolve_linear_ = nullptr;
     C3D_Tex post_tex_{};
     bool post_ok_ = false;
+    bool post_tried_ = false;
+    void ensure_post_tex() {
+        if (post_ok_ || post_tried_ || !rt64_3ds::render_desc().screen_filters) return;
+        post_tried_ = true;
+        post_ok_ = C3D_TexInit(&post_tex_, 256, wide_800_ ? 1024 : 512, color16_ ? GPU_RGB565 : GPU_RGBA8);
+        if (post_ok_) {
+            C3D_TexSetFilter(&post_tex_, GPU_LINEAR, GPU_LINEAR);
+            C3D_TexSetWrap(&post_tex_, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+        }
+    }
     C3D_RenderTarget* native_eye(C3D_RenderTarget* source) {
         if ((sample_scale_ == 1 && !wide_800_) || !resolve_target_ || !resolve_linear_) return source;
         const u32 fmt = color16_ ? GX_TRANSFER_FMT_RGB565 : GX_TRANSFER_FMT_RGBA8;

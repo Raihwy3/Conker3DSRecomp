@@ -173,13 +173,15 @@ int game_glyph(unsigned char c) {
 int game_text_width(const char* s) {
     int w=0;for(;*s;++s){int k=game_glyph((unsigned char)*s);w+=*s==' '?4:k>=0?g_game_glyphs[k].w+g_game_glyphs[k].dx:0;}return w;
 }
+inline uint8_t div255(int x) { return (uint8_t)(((x + 128) + ((x + 128) >> 8)) >> 8); }
 void game_blend(uint8_t* dest,int x,int y,int r,int g,int b,int alpha) {
-    if(x<0||x>=320||y<0||y>=240||alpha<=0)return;
+    if((unsigned)x>=320u||(unsigned)y>=240u||alpha<=0)return;
     uint8_t* d=&dest[(size_t)theme_index(x,y)*3];
+    if(alpha>=255){d[0]=(uint8_t)b;d[1]=(uint8_t)g;d[2]=(uint8_t)r;return;}
     const int inv=255-alpha;
-    d[0]=(uint8_t)((b*alpha+d[0]*inv)/255);
-    d[1]=(uint8_t)((g*alpha+d[1]*inv)/255);
-    d[2]=(uint8_t)((r*alpha+d[2]*inv)/255);
+    d[0]=div255(b*alpha+d[0]*inv);
+    d[1]=div255(g*alpha+d[1]*inv);
+    d[2]=div255(r*alpha+d[2]*inv);
 }
 void game_text(uint8_t* dest,const char* s,int x,int y,int maxw,uint16_t color,bool center=false) {
     const int width=game_text_width(s);if(!width)return;
@@ -422,7 +424,7 @@ void game_lives(uint8_t* dest,uint16_t colour) {
 // Original pause-menu artwork, placed in the bottom screen's corners.
 void game_scaled_sprite(uint8_t* dest,const uint8_t* image,int source_w,int source_h,int x,int y,int w,int h,int alpha=255) {
     for(int yy=0;yy<h;++yy)for(int xx=0;xx<w;++xx){const auto* p=image+((yy*source_h/h)*source_w+xx*source_w/w)*4;
-        game_blend(dest,x+xx,y+yy,p[0],p[1],p[2],p[3]*alpha/255);}
+        game_blend(dest,x+xx,y+yy,p[0],p[1],p[2],alpha>=255?p[3]:div255(p[3]*alpha));}
 }
 void game_health_money(uint8_t* dest) {
     if(g_conker_health_visible && g_conker_health>=0 && g_chocolate_ready)
@@ -707,9 +709,10 @@ inline void draw_conker_rgba_text(uint8_t* buf,int W,int H,const char* s,int x0,
     auto blend_px=[&](int x,int y,int cr,int cg,int cb,int a){
         if((unsigned)x>=(unsigned)W || (unsigned)y>=(unsigned)H || a<=0)return;
         uint8_t* p=buf+(y*W+x)*4;
-        p[0]=(uint8_t)((cr*a+p[0]*(255-a))/255);
-        p[1]=(uint8_t)((cg*a+p[1]*(255-a))/255);
-        p[2]=(uint8_t)((cb*a+p[2]*(255-a))/255);
+        const int inv=255-a;
+        p[0]=div255(cr*a+p[0]*inv);
+        p[1]=div255(cg*a+p[1]*inv);
+        p[2]=div255(cb*a+p[2]*inv);
         p[3]=(uint8_t)std::max((int)p[3],a);
     };
     for(int pass=0;pass<2;++pass){
