@@ -1179,6 +1179,7 @@ public:
         float focus_rect[4]{};
         const bool focus_on = rt64_3ds::query_focus_rect(rdram_, focus_rect);
         interp_.set_focus_rect(focus_on, focus_rect[0], focus_rect[1], focus_rect[2], focus_rect[3]);
+        interp_.set_hide_center_reticle(rt64_3ds::reticle_visible());
         maybe_switch_frame_size();
         if (dbg_tasks_ < 3) {
             dbg_tasks_++;
@@ -5745,6 +5746,10 @@ void rt64_3ds::set_reticle(bool visible, int style, uint8_t r, uint8_t g, uint8_
         ((uint64_t)b << 24) |
         ((uint64_t)alpha << 32);
     g_reticle_state.store(packed, std::memory_order_relaxed);
+}
+
+bool rt64_3ds::reticle_visible() {
+    return (g_reticle_state.load(std::memory_order_relaxed) & 1ULL) != 0;
 }
 
 bool rt64_3ds::read_back_frame(uint8_t* rdram, uint32_t fb_addr, uint32_t fb_width, int x, int y, int w, int h) {

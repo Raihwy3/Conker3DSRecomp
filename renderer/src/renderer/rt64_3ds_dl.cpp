@@ -1278,6 +1278,45 @@ struct Interpreter::Impl {
     float focus_rect[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     float focus_sx = 1.0f, focus_sy = 1.0f;
     uint8_t focus_mode = 0;
+    bool focus_saw_split_pass = false;
+    int focus_iris_quads = 0;
+    bool hide_center_reticle = false;
+
+    bool is_center_reticle_box(float cx, float cy, float rw, float rh) const {
+        if (!hide_center_reticle || rw < 4.0f || rh < 4.0f || rw > 56.0f || rh > 56.0f) return false;
+        const float smx = (float)screen_w * 0.5f, smy = (float)screen_h * 0.5f;
+        if (std::fabs(cx - smx) <= 14.0f && std::fabs(cy - smy) <= 14.0f) return true;
+        if (focus_active) {
+            const float fmx = (focus_rect[0] + focus_rect[2]) * 0.5f;
+            const float fmy = (focus_rect[1] + focus_rect[3]) * 0.5f;
+            if (std::fabs(cx - fmx) <= 14.0f && std::fabs(cy - fmy) <= 14.0f) return true;
+        }
+        return false;
+    }
+
+    void focus_hud_anchor(float cx, float cy, float& src_ax, float& src_ay, float& dst_ax, float& dst_ay, float& scale) const {
+        const float mx = (focus_rect[0] + focus_rect[2]) * 0.5f;
+        const float my = (focus_rect[1] + focus_rect[3]) * 0.5f;
+        const float fh = focus_rect[3] - focus_rect[1];
+        scale = 1.20f;
+        if (std::fabs(cx - mx) <= 24.0f) {
+            src_ax = mx; dst_ax = (float)screen_w * 0.5f;
+        } else if (cx < mx) {
+            src_ax = focus_rect[0]; dst_ax = 0.0f;
+        } else {
+            src_ax = focus_rect[2]; dst_ax = (float)screen_w;
+        }
+        // Only center-anchor Y for true dead-center elements (crosshairs);
+        // keep top/middle elements (including the radar circle + its dots)
+        // on the same top anchor so dots never detach from the radar.
+        if (std::fabs(cx - mx) <= 20.0f && std::fabs(cy - my) <= 16.0f) {
+            src_ay = my; dst_ay = (float)screen_h * 0.5f;
+        } else if (cy < focus_rect[1] + fh * 0.72f) {
+            src_ay = focus_rect[1]; dst_ay = 0.0f;
+        } else {
+            src_ay = focus_rect[3]; dst_ay = (float)screen_h;
+        }
+    }
 
     // Framebuffer effects: the game copies the front buffer into a storage
     // buffer in RDRAM with texture rectangles, then draws with it. Draws
@@ -2177,6 +2216,36 @@ struct Interpreter::Impl {
             stats->tris_lost_index++;
             return;
         }
+        const bool focus_ortho_hud = focus_active && focus_mode == 0 && focus_saw_split_pass &&
+                                     cur_rtt < 0 && !cimg_is_depth_memory() &&
+                                     !bottom_span && !is_perspective(proj);
+        float hud_src_x = 0.0f, hud_src_y = 0.0f, hud_dst_x = 0.0f, hud_dst_y = 0.0f, hud_scale = 1.0f;
+        bool hud_stretch = false;
+        if (focus_ortho_hud || (hide_center_reticle && cur_rtt < 0 && !cimg_is_depth_memory() && !bottom_span && !is_perspective(proj))) {
+            const LoadedVertex& va = slot(i0);
+            const LoadedVertex& vb = slot(i1);
+            const LoadedVertex& vc = slot(i2);
+            const float ax = va.w != 0.0f ? va.x / va.w : va.x, ay = va.w != 0.0f ? va.y / va.w : va.y;
+            const float bx = vb.w != 0.0f ? vb.x / vb.w : vb.x, by = vb.w != 0.0f ? vb.y / vb.w : vb.y;
+            const float cx_v = vc.w != 0.0f ? vc.x / vc.w : vc.x, cy_v = vc.w != 0.0f ? vc.y / vc.w : vc.y;
+            const float min_x = std::min(ax, std::min(bx, cx_v)), max_x = std::max(ax, std::max(bx, cx_v));
+            const float min_y = std::min(ay, std::min(by, cy_v)), max_y = std::max(ay, std::max(by, cy_v));
+            const float rw = max_x - min_x, rh = max_y - min_y;
+            const float cx = (min_x + max_x) * 0.5f;
+            const float cy = (min_y + max_y) * 0.5f;
+            if (is_center_reticle_box(cx, cy, rw, rh)) return;
+            if (focus_ortho_hud) {
+                const bool inside = (cx >= focus_rect[0] - 4.0f && cx <= focus_rect[2] + 4.0f &&
+                                     cy >= focus_rect[1] - 4.0f && cy <= focus_rect[3] + 4.0f);
+                if (!inside) return;
+                const float fw = focus_rect[2] - focus_rect[0], fh = focus_rect[3] - focus_rect[1];
+                if (rw >= fw * 0.7f && rh >= fh * 0.7f) {
+                    hud_stretch = true;
+                } else {
+                    focus_hud_anchor(cx, cy, hud_src_x, hud_src_y, hud_dst_x, hud_dst_y, hud_scale);
+                }
+            }
+        }
         if (ip != nullptr) interp_tiles();
         // RenderDesc::merge_image_tiles: the triangle samples a texture of its
         // tile's whole image when its coordinates stay inside the tile.
@@ -2253,12 +2322,29 @@ struct Interpreter::Impl {
         return;
 #endif
         // Deferred (finish_triangles): the triangle as its three vertices.
-        const bool deferred = defer_open == (int32_t)(r - out->draws.data());
+        const bool deferred = !focus_ortho_hud && (defer_open == (int32_t)(r - out->draws.data()));
         if (deferred && (ip == nullptr || !ip->recording)) {
             defer_tri(i0, i1, i2);
             return;
         }
-        const LoadedVertex& a = slot(i0); const LoadedVertex& b = slot(i1); const LoadedVertex& c = slot(i2);
+        LoadedVertex a = slot(i0); LoadedVertex b = slot(i1); LoadedVertex c = slot(i2);
+        if (focus_ortho_hud) {
+            if (hud_stretch) {
+                auto map_v = [&](LoadedVertex& v) {
+                    const float w = v.w != 0.0f ? v.w : 1.0f;
+                    v.x = ((v.x / w - focus_rect[0]) * focus_sx) * w;
+                    v.y = ((v.y / w - focus_rect[1]) * focus_sy) * w;
+                };
+                map_v(a); map_v(b); map_v(c);
+            } else {
+                auto map_h = [&](LoadedVertex& v) {
+                    const float w = v.w != 0.0f ? v.w : 1.0f;
+                    v.x = (hud_dst_x + (v.x / w - hud_src_x) * hud_scale) * w;
+                    v.y = (hud_dst_y + (v.y / w - hud_src_y) * hud_scale) * w;
+                };
+                map_h(a); map_h(b); map_h(c);
+            }
+        }
         if (ip != nullptr && ip->recording) {
             // Frame interpolation: the triangle as build_inbetween draws it
             // again (its texel coordinates as below, culled or not): its
@@ -2478,24 +2564,6 @@ struct Interpreter::Impl {
             emit_rect_aligned(ulx, uly, lrx, lry, textured, tile, s, t, dsdx, dtdy, flip, 0.0f, 0.0f, kNone, false);
             return;
         }
-        if (focus_active && cur_rtt < 0 && !cimg_is_depth_memory()) {
-            if (focus_mode == 2) return;
-            if (focus_mode == 1) {
-                ulx = (ulx - focus_rect[0]) * focus_sx;
-                lrx = (lrx - focus_rect[0]) * focus_sx;
-                uly = (uly - focus_rect[1]) * focus_sy;
-                lry = (lry - focus_rect[1]) * focus_sy;
-                if (textured) {
-                    dsdx /= focus_sx;
-                    dtdy /= focus_sy;
-                }
-            } else if (!textured) {
-                // Hide thin splitscreen divider bars drawn under a fullscreen scissor.
-                const bool horiz_div = (lry - uly <= 6.0f) && (std::fabs(uly - focus_rect[1]) <= 6.0f || std::fabs(uly - focus_rect[3]) <= 6.0f);
-                const bool vert_div = (lrx - ulx <= 6.0f) && (std::fabs(ulx - focus_rect[0]) <= 6.0f || std::fabs(ulx - focus_rect[2]) <= 6.0f);
-                if (horiz_div || vert_div) return;
-            }
-        }
         const float align[4] = { rect_align[0] + origin_place(rect_lorigin), rect_align[1], rect_align[2] + origin_place(rect_rorigin), rect_align[3] };
         emit_rect_aligned(ulx, uly, lrx, lry, textured, tile, s, t, dsdx, dtdy, flip, origin_shift(rect_lorigin), origin_shift(rect_rorigin), align,
                           rect_lorigin == 0x800 && rect_rorigin == 0x800);
@@ -2506,6 +2574,86 @@ struct Interpreter::Impl {
     // rectangles RT64 stretches for covering the width).
     void emit_rect_aligned(float ulx, float uly, float lrx, float lry, bool textured, int tile, float s, float t, float dsdx, float dtdy, bool flip,
                            float lshift, float rshift, const float* align, bool plain_origins) {
+        if (!bottom_span && cur_rtt < 0 && !cimg_is_depth_memory()) {
+            // Pause menu blurred background samples a GPU snapshot: disable splitscreen
+            // focus for the rest of this display list so the Pause menu renders fullscreen.
+            if (focus_active && textured) {
+                TexDesc src{};
+                describe_tile(tile, src);
+                if (src.snapshot) {
+                    focus_active = false;
+                    focus_mode = 0;
+                    scissor[0] = 0; scissor[1] = 0;
+                    scissor[2] = (int16_t)screen_w; scissor[3] = (int16_t)screen_h;
+                }
+            }
+            if (hide_center_reticle && textured) {
+                const float rw = lrx - ulx, rh = lry - uly;
+                const float cx = (ulx + lrx) * 0.5f, cy = (uly + lry) * 0.5f;
+                if (is_center_reticle_box(cx, cy, rw, rh)) return;
+            }
+            if (focus_active) {
+                if (focus_mode == 2) return;
+                const float rw = lrx - ulx, rh = lry - uly;
+                const float cx = (ulx + lrx) * 0.5f, cy = (uly + lry) * 0.5f;
+                const float fw = focus_rect[2] - focus_rect[0], fh = focus_rect[3] - focus_rect[1];
+                auto remap_hud_or_fade = [&]() {
+                    // Full-viewport fades, black iris bands (!textured, wide/tall), and the 4 circle-quarter
+                    // G_TEXRECTs that immediately follow black iris bands use one exact linear remap
+                    // so there are zero holes or seams at any iris radius (without stretching the minimap).
+                    const bool is_black_fill = !textured && fill[0] == 0 && fill[1] == 0 && fill[2] == 0;
+                    const bool is_iris_band = is_black_fill && (rw >= fw * 0.85f || ulx < -100.0f || lrx > (float)screen_w + 100.0f);
+                    if (is_iris_band) {
+                        focus_iris_quads = 4;
+                    }
+                    const bool is_iris_quarter = textured && focus_iris_quads > 0;
+                    if (is_iris_quarter) {
+                        focus_iris_quads--;
+                    }
+                    if (!textured || is_iris_quarter || (rw >= fw * 0.65f && rh >= fh * 0.65f)) {
+                        ulx = (ulx - focus_rect[0]) * focus_sx;
+                        lrx = (lrx - focus_rect[0]) * focus_sx;
+                        uly = (uly - focus_rect[1]) * focus_sy;
+                        lry = (lry - focus_rect[1]) * focus_sy;
+                        if (textured) {
+                            dsdx /= focus_sx;
+                            dtdy /= focus_sy;
+                        }
+                    } else {
+                        float sax = 0.0f, say = 0.0f, dax = 0.0f, day = 0.0f, sc = 1.0f;
+                        focus_hud_anchor(cx, cy, sax, say, dax, day, sc);
+                        ulx = dax + (ulx - sax) * sc;
+                        lrx = dax + (lrx - sax) * sc;
+                        uly = day + (uly - say) * sc;
+                        lry = day + (lry - say) * sc;
+                        dsdx /= sc;
+                        dtdy /= sc;
+                    }
+                };
+                if (focus_mode == 1) {
+                    remap_hud_or_fade();
+                } else {
+                    // Fullscreen scissor during splitscreen:
+                    if (rw >= (float)screen_w - 32.0f && rh >= (float)screen_h - 32.0f) {
+                        // Fullscreen fade/clear: pass through untouched.
+                    } else if (!textured &&
+                               (((rh <= 6.0f) && (std::fabs(uly - focus_rect[1]) <= 6.0f || std::fabs(uly - focus_rect[3]) <= 6.0f)) ||
+                                ((rw <= 6.0f) && (std::fabs(ulx - focus_rect[0]) <= 6.0f || std::fabs(ulx - focus_rect[2]) <= 6.0f)))) {
+                        // Hide thin splitscreen divider bars.
+                        return;
+                    } else if (focus_saw_split_pass) {
+                        // Post-3D splitscreen HUD & per-player screen fades (e.g. death darkening / wide iris bands):
+                        // Wide iris bands extend to -1024/+1314 horizontally, so test X-overlap for untextured fills.
+                        const bool x_ok = !textured
+                            ? (lrx > focus_rect[0] + 2.0f && ulx < focus_rect[2] - 2.0f)
+                            : (cx >= focus_rect[0] - 4.0f && cx <= focus_rect[2] + 4.0f);
+                        const bool y_ok = (cy >= focus_rect[1] - 4.0f && cy <= focus_rect[3] + 4.0f);
+                        if (!x_ok || !y_ok) return;
+                        remap_hud_or_fade();
+                    }
+                }
+            }
+        }
         const float ulx_game = ulx, lrx_game = lrx;
         ulx += align[0]; uly += align[1];
         lrx += align[2]; lry += align[3];
@@ -3137,6 +3285,8 @@ struct Interpreter::Impl {
     bool run(uint32_t data_ptr) {
         tex_seq++;   // FrameRecord::tlut restarts: cached palette indices are stale
         focus_mode = 0;
+        focus_saw_split_pass = false;
+        focus_iris_quads = 0;
         uint32_t stack[kMaxDlDepth];
         int depth = 0;
         uint32_t pc = seg(data_ptr);
@@ -3482,6 +3632,7 @@ struct Interpreter::Impl {
                         if (sw >= screen_w - 32 && sh >= screen_h - 32) {
                             focus_mode = 0;
                         } else {
+                            focus_saw_split_pass = true;
                             const bool overlaps = (scissor[2] > focus_rect[0] + 4.0f) &&
                                                   (scissor[0] < focus_rect[2] - 4.0f) &&
                                                   (scissor[3] > focus_rect[1] + 4.0f) &&
@@ -4315,6 +4466,7 @@ void Interpreter::set_focus_rect(bool active, float x0, float y0, float x1, floa
     }
     impl_->focus_mode = 0;
 }
+void Interpreter::set_hide_center_reticle(bool on) { impl_->hide_center_reticle = on; }
 void Interpreter::set_aim_hash(bool on, const TexShape* shapes, size_t shape_count, bool all) {
     impl_->aim_hash = on;
     impl_->aim_shapes = shapes;

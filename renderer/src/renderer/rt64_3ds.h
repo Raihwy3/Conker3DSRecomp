@@ -562,6 +562,7 @@ const char* screenshot_name();      // the last one's name, without _top.bmp etc
 void show_top_notice(const char* text, uint32_t duration_ms = 6000);
 void show_top_notice_rgba8(const uint32_t* rgba8, int w, int h, uint32_t duration_ms = 6000);
 void set_reticle(bool visible, int style, uint8_t r, uint8_t g, uint8_t b, uint8_t alpha, bool raised);
+bool reticle_visible();
 
 }   // namespace rt64_3ds
 

@@ -10,6 +10,7 @@
 #include "conker_cheats.h"
 #include "conker_note_release.h"
 #include "librecomp/addresses.hpp"
+#include "ultramodern/timeline.hpp"
 #include <3ds.h>
 #include <algorithm>
 #include <cmath>
@@ -141,20 +142,31 @@ extern "C" void conker_audio_vol_set(uint8_t*, recomp_context* ctx) {
 }
 
 extern "C" void conker_cutscene_skip_tick(uint8_t* rdram, recomp_context*) {
-    if (!conker3ds::get("misc_skip_cutscene", 0)) {
+    (void)rdram;
+}
+
+static void run_cutscene_skip_per_frame(uint8_t* rdram) {
+    if (!conker3ds::get("misc_skip_cutscene", 0) || ultramodern::timeline::enabled()) {
         g_skip_hold_frames = 0;
         return;
     }
-    const bool playing = MEM_BU(0, addr(0x800C35EA)) == 1 || MEM_BU(1, addr(0x800C35EA)) == 1;
-    if (!playing) {
+    const bool slot0 = MEM_BU(0, addr(0x800C35EA)) == 1;
+    const bool slot1 = MEM_BU(1, addr(0x800C35EA)) == 1;
+    if ((!slot0 && !slot1) || MEM_BU(0, addr(0x800C3C88)) != 0) {
         g_skip_hold_frames = 0;
         return;
     }
-    const uint32_t held = hidKeysHeld();
+    const uint32_t held = hidKeysHeld() & ~recomp3ds::settings_menu_keys();
     if (held & KEY_B) {
         if (++g_skip_hold_frames >= 15) {
-            MEM_B(0, addr(0x800C35C5)) = 0;
-            MEM_B(0, addr(0x800C35C4)) = 1;
+            // Directly enter Conker's native cutscene-skip fade/finish state (func_1501E1B4 L_1501E2A4 -> func_1501DF04),
+            // bypassing func_1501E05C's scene/first-viewing/timer/unskippable gates.
+            MEM_B(0, addr(0x800C3C9C)) = 0;
+            MEM_B(0, addr(0x800C3C88)) = 1;
+            MEM_B(0, addr(0x800C3C89)) = 10;
+            std::fprintf(stderr, "modifier: cutscene skip triggered (scene=%02lx slots=%u/%u)\n",
+                         (unsigned long)(uint32_t)MEM_W(0, addr(0x800BE9F0)),
+                         (unsigned)slot0, (unsigned)slot1);
             g_skip_hold_frames = 0;
         }
     } else {
@@ -163,6 +175,8 @@ extern "C" void conker_cutscene_skip_tick(uint8_t* rdram, recomp_context*) {
 }
 
 extern "C" int conker_frame_update_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (ultramodern::timeline::enabled()) return 0;
+    run_cutscene_skip_per_frame(rdram);
     // Quick Cheats
     const uint32_t scene = (uint32_t)MEM_W(0, addr(0x800BE9F0));
     conker_cheats::Config cheat_cfg{};

@@ -92,6 +92,7 @@ std::chrono::high_resolution_clock::time_point ticks_to_timepoint(uint64_t ticks
 }
 
 static std::atomic<bool> virtual_clock = false;
+static std::atomic<bool> timer_thread_stopped = false;
 constexpr uint64_t virtual_ticks_per_read = 47;
 static std::atomic<uint64_t> virtual_now = 0;
 
@@ -110,6 +111,9 @@ void ultramodern::timeline_parts::clock_enable() {
     virtual_now.store(0, std::memory_order_relaxed);
     virtual_clock.store(true, std::memory_order_release);
     timer_context.action_queue.enqueue(RemoveTimerAction{ NULLPTR });
+    while (!timer_thread_stopped.load(std::memory_order_acquire)) {
+        ultramodern::sleep_milliseconds(1);
+    }
 }
 
 void ultramodern::timeline_parts::clock_disable() {
@@ -200,11 +204,13 @@ void timer_thread(RDRAM_ARG1) {
     while (true) {
         ultramodern_dbg_counts[3] = ultramodern_dbg_counts[3] + 1;
         if (virtual_clock.load(std::memory_order_acquire)) {
+            timer_thread_stopped.store(true, std::memory_order_release);
             lock.unlock();
             ultramodern::sleep_milliseconds(16);
             lock.lock();
             continue;
         }
+        timer_thread_stopped.store(false, std::memory_order_relaxed);
         // Empty the action queue
         Action cur_action;
         while (timer_context.action_queue.try_dequeue(cur_action)) {
@@ -213,10 +219,20 @@ void timer_thread(RDRAM_ARG1) {
 
         // If there's no timer to act on, wait for one to come in from the action queue
         while (timer_context.firing_order.empty()) {
+            if (virtual_clock.load(std::memory_order_acquire)) break;
             lock.unlock();
             timer_context.action_queue.wait_dequeue(cur_action);
             lock.lock();
+            if (virtual_clock.load(std::memory_order_acquire)) {
+                if (std::holds_alternative<AddTimerAction>(cur_action)) {
+                    timer_context.action_queue.enqueue(cur_action);
+                }
+                break;
+            }
             process_timer_action_locked(cur_action);
+        }
+        if (virtual_clock.load(std::memory_order_acquire)) {
+            continue;
         }
 
         // The timer that's closest to running out

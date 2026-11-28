@@ -24,7 +24,14 @@ constexpr u8 kDataChannel = 1;
 constexpr size_t kUdsSharedMemSize = 0x8000;
 constexpr const char kPassphrase[] = "Conker3DSUDS";
 constexpr u64 kResendIntervalMs = 20;
-constexpr u64 kPeerTimeoutMs = 8000;
+constexpr u64 kPeerTimeoutMs = 20000;
+
+// Real-time 3DS monotonic milliseconds via svcGetSystemTick().
+// Do NOT call osGetTime() here — ultramodern defines a global C symbol
+// `osGetTime()` that returns virtual N64 ticks and mutates `virtual_now`!
+inline u64 now_ms() {
+    return (svcGetSystemTick() * 1000ull) / SYSCLOCK_ARM11;
+}
 
 struct Session {
     bool uds_inited = false;
@@ -164,7 +171,7 @@ void poll_game_packets() {
             if (decode_inputs(raw, actual, pkt)) {
                 g_sess.engine.on_remote_inputs(pkt);
                 if (pkt.port < kMaxPlayers) {
-                    g_sess.last_peer_ms[pkt.port] = osGetTime();
+                    g_sess.last_peer_ms[pkt.port] = now_ms();
                 }
                 // Host relays client inputs to all peers so 3-4 player star topology works over UDS.
                 if (g_sess.hosting && pkt.port != 0) {
@@ -210,14 +217,14 @@ void netplay_read_data_callback(ultramodern::input::Pad* pads, int max_controlle
     const u16 dst = g_sess.hosting ? UDS_BROADCAST_NETWORKNODEID : UDS_HOST_NETWORKNODEID;
     send_packet(dst, raw, raw_len);
 
-    u64 wait_start = osGetTime();
+    u64 wait_start = now_ms();
     u64 last_resend = wait_start;
 
     while (!g_sess.engine.ready_to_advance()) {
         poll_game_packets();
         if (g_sess.engine.ready_to_advance()) break;
 
-        const u64 now = osGetTime();
+        const u64 now = now_ms();
         if (now - last_resend >= kResendIntervalMs) {
             const InputsPacket retry = g_sess.engine.build_local_packet();
             const size_t rlen = encode_inputs(retry, raw, sizeof(raw));
@@ -230,6 +237,9 @@ void netplay_read_data_callback(ultramodern::input::Pad* pads, int max_controlle
                 if (missing & (1u << p)) {
                     std::fprintf(stderr, "netplay: player %d timed out at read %lu\n",
                                  p + 1, (unsigned long)g_sess.engine.current_read());
+                    char note[48];
+                    std::snprintf(note, sizeof(note), "Player %d timed out", p + 1);
+                    recomp3ds::screen_conker_set_subnote(note);
                     g_sess.engine.mark_peer_left(p);
                 }
             }
@@ -363,7 +373,7 @@ bool run_host_lobby(PrintConsole* top, PrintConsole* bottom) {
             }
         }
 
-        const u64 now = osGetTime();
+        const u64 now = now_ms();
         if (now - last_bcast >= 500) {
             broadcast_lobby_state();
             last_bcast = now;
@@ -406,7 +416,7 @@ bool run_join_lobby(PrintConsole* top, PrintConsole* bottom) {
             std::free(scan_buf);
             return false;
         }
-        const u64 now = osGetTime();
+        const u64 now = now_ms();
         if (now - last_scan >= 600) {
             last_scan = now;
             udsNetworkScanInfo* networks = nullptr;
@@ -445,7 +455,7 @@ bool run_join_lobby(PrintConsole* top, PrintConsole* bottom) {
     g_sess.connected = true;
     g_sess.bound = true;
 
-    const uint32_t my_client_id = ((uint32_t)osGetTime() ^ (uint32_t)svcGetSystemTick()) | 1u;
+    const uint32_t my_client_id = ((uint32_t)now_ms() ^ (uint32_t)svcGetSystemTick()) | 1u;
 
     bool welcomed = false;
     u64 last_hello = 0;
@@ -457,7 +467,7 @@ bool run_join_lobby(PrintConsole* top, PrintConsole* bottom) {
         hidScanInput();
         if (hidKeysDown() & KEY_B) return false;
 
-        const u64 now = osGetTime();
+        const u64 now = now_ms();
         if (!welcomed && now - last_hello >= 350) {
             HelloPacket hello{};
             hello.rom_hash = g_sess.rom_hash;
@@ -630,7 +640,7 @@ int conker_netplay::local_port() { return g_sess.match_active ? g_sess.local_por
 void conker_netplay::on_game_init() {
     if (!g_sess.match_active) return;
     g_sess.engine.start(g_sess.local_port, g_sess.player_count, g_sess.input_delay);
-    const u64 now = osGetTime();
+    const u64 now = now_ms();
     for (int i = 0; i < kMaxPlayers; ++i) g_sess.last_peer_ms[i] = now;
     ultramodern::input::set_read_data_callback(netplay_read_data_callback);
     ultramodern::timeline::enable(false);

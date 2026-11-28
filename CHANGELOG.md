@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0-r3 (Wireless Multiplayer Polish & Sync Fixes)
+
+- Fixed Old 3DS + New 3DS wireless multiplayer desyncs (resolved `osGetTime()` symbol collision with `ultramodern`'s virtual clock, fixed `timer_thread` stealing virtual timers on startup, matched Old/New 3DS settings during wireless play, disabled local-only cheats/photo mode/cutscene skip in wireless play, and raised peer timeout to 20 s).
+- Fixed per-player fullscreen multiplayer HUD:
+  - Each console now shows only its own player's HUD (no doubled splitscreen HUD), scaled up cleanly by `1.20x` with radar dots aligned inside the minimap.
+  - Fixed the Pause menu blurred background and buttons rendering cleanly fullscreen.
+  - Fixed per-player death iris/darkening wipes showing only on the player who died without holes.
+- Enabled custom aiming crosshairs in multiplayer (replacing the built-in center aiming crosshair while leaving the sniper scope UI intact).
+- Fixed Hold-B cutscene skip to trigger Conker's real native cutscene skipper (`func_1501E1B4` / `func_1501E05C`, clearing the unskippable flag `0x800C3C9C` and arming first-viewing skip `0x800D2E40`) instead of writing the wrong cutscene-request address.
+
 ## 0.3.0-r2 (Wireless Multiplayer Test)
 
 - Added experimental 2–4 player **3DS Local Wireless (`nwm::UDS`) lockstep multiplayer** (press **Y: WIRELESS** on the Select Version screen to Host or Join a room; requires the same ROM on each console).

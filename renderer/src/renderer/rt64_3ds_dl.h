@@ -94,6 +94,7 @@ public:
     void set_bottom_hud(bool on);
     void set_split_untagged_ortho(bool on);
     void set_focus_rect(bool active, float x0, float y0, float x1, float y1);
+    void set_hide_center_reticle(bool on);
     // Always take G_BRANCH_Z (the near model), as the recomp frontends do.
     void set_force_branch_z(bool on);
     // gSPCullDisplayList honoured (RenderDesc::cull_dl): a list whose tested

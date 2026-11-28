@@ -463,6 +463,10 @@ void conker_on_init_3ds(uint8_t* rdram, recomp_context* ctx) {
     refresh_achievement_labels();
     if (conker_netplay::is_active()) {
         recomp3ds::input_set_gyro(false);
+        value_model_highest = 0;
+        conker3ds::set("model_highest", 0);
+        g_skip_intro = 1;
+        conker3ds::set("misc_skip_intro", 1);
         recomp3ds::input_set_connected_ports(conker_netplay::player_count());
         rt64_3ds::set_focus_rect_query(conker_netplay_focus_rect);
         conker_netplay::on_game_init();
@@ -686,6 +690,9 @@ int main(int argc, char** argv) {
         conker_set_rom_path(path);
         if (version!=g_launcher_art_rom && !recomp3ds::screen_conker_load_rom(path)) recomp3ds::screen_set_conker_theme(false);
         game.keep_wireless = conker_netplay::is_active();
+        if (conker_netplay::is_active()) {
+            game.render.frame_interpolation = false;
+        }
         return true;
     };
     recomp::Version::from_string(CONKER_LAUNCHER_VERSION, desc.project_version);
